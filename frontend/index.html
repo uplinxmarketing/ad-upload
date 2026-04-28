@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Uplinx Meta Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-primary:#0d0d14;--bg-secondary:#13131f;--bg-tertiary:#1a1a2e;--bg-hover:#1f1f35;
+  --border:#252540;--accent:#6c63ff;--accent-hover:#7c74ff;--accent-soft:rgba(108,99,255,0.12);
+  --success:#22c55e;--warning:#f59e0b;--error:#ef4444;
+  --text-primary:#e8e8f0;--text-secondary:#9090b0;--text-dim:#606080;
+  --font-ui:'DM Sans',sans-serif;--font-heading:'Syne',sans-serif;--font-mono:'JetBrains Mono',monospace;
+  --radius:8px;--radius-lg:12px;--radius-pill:100px;--transition:150ms ease;
+}
+html,body{height:100%;overflow:hidden;background:var(--bg-primary);color:var(--text-primary);font-family:var(--font-ui);font-size:14px}
+button{cursor:pointer;border:none;background:none;color:inherit;font:inherit}
+input,textarea,select{font:inherit;color:inherit;background:none;border:none;outline:none}
+a{color:inherit;text-decoration:none}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* ── Layout ── */
+#app{display:flex;height:100vh;overflow:hidden}
+#connect-screen{display:none;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:24px;background:var(--bg-primary)}
+#connect-screen.visible{display:flex}
+#app.hidden{display:none}
+
+/* ── Left Sidebar ── */
+#sidebar{width:240px;min-width:240px;background:var(--bg-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-header{padding:16px;border-bottom:1px solid var(--border)}
+.sidebar-logo{font-family:var(--font-heading);font-size:18px;font-weight:700;color:var(--accent);letter-spacing:1px}
+.sidebar-logo span{display:block;font-family:var(--font-ui);font-size:11px;font-weight:400;color:var(--text-dim);letter-spacing:0;margin-top:2px}
+.sidebar-search{padding:10px 12px;border-bottom:1px solid var(--border)}
+.sidebar-search input{width:100%;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:13px;color:var(--text-secondary)}
+.sidebar-search input::placeholder{color:var(--text-dim)}
+.sidebar-new-btn{margin:10px 12px;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:var(--radius);border:1px dashed var(--border);color:var(--text-secondary);font-size:13px;transition:var(--transition);width:calc(100% - 24px)}
+.sidebar-new-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.sidebar-clients{flex:1;overflow-y:auto;padding:8px 0}
+.sidebar-section-label{padding:6px 14px;font-size:10px;font-weight:600;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase}
+.client-item{padding:0}
+.client-header{display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;transition:var(--transition);border-radius:0}
+.client-header:hover{background:var(--bg-hover)}
+.client-header.active{background:var(--accent-soft)}
+.client-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.client-name{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.client-chevron{font-size:10px;color:var(--text-dim);transition:var(--transition);flex-shrink:0}
+.client-chevron.open{transform:rotate(90deg)}
+.client-children{display:none;padding-left:20px}
+.client-children.open{display:block}
+.ad-account-item{padding:0}
+.ad-account-header{display:flex;align-items:center;gap:6px;padding:5px 12px;cursor:pointer;color:var(--text-secondary);font-size:12px;transition:var(--transition)}
+.ad-account-header:hover{color:var(--text-primary);background:var(--bg-hover)}
+.ad-account-children{display:none;padding-left:16px}
+.ad-account-children.open{display:block}
+.conv-item{display:flex;align-items:center;gap:6px;padding:5px 12px;cursor:pointer;font-size:12px;color:var(--text-secondary);border-left:2px solid transparent;transition:var(--transition);border-radius:0 var(--radius) var(--radius) 0}
+.conv-item:hover{background:var(--bg-hover);color:var(--text-primary)}
+.conv-item.active{border-left-color:var(--accent);color:var(--text-primary);background:var(--accent-soft)}
+.conv-item.pinned::before{content:'📌';font-size:10px}
+.sidebar-bottom{border-top:1px solid var(--border);padding:8px}
+.sidebar-nav{display:flex;flex-direction:column;gap:2px}
+.sidebar-nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius);color:var(--text-secondary);font-size:13px;cursor:pointer;transition:var(--transition)}
+.sidebar-nav-item:hover{background:var(--bg-hover);color:var(--text-primary)}
+.sidebar-new-conv{margin:8px 12px 4px;display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--radius);background:var(--accent);color:#fff;font-size:13px;font-weight:500;transition:var(--transition);justify-content:center}
+.sidebar-new-conv:hover{background:var(--accent-hover)}
+
+/* ── Center Chat ── */
+#chat-area{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-primary)}
+.chat-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--bg-secondary);flex-shrink:0}
+.chat-title{font-family:var(--font-heading);font-size:16px;font-weight:600}
+.chat-breadcrumb{font-size:12px;color:var(--text-dim);margin-top:2px}
+.chat-header-menu{padding:6px 8px;border-radius:var(--radius);color:var(--text-secondary);transition:var(--transition)}
+.chat-header-menu:hover{background:var(--bg-hover);color:var(--text-primary)}
+.messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:12px;color:var(--text-secondary)}
+.welcome h2{font-family:var(--font-heading);font-size:22px;color:var(--text-primary)}
+.welcome p{font-size:13px;text-align:center;max-width:400px;line-height:1.6}
+.msg{display:flex;flex-direction:column;max-width:80%}
+.msg.user{align-self:flex-end;align-items:flex-end}
+.msg.assistant{align-self:flex-start;align-items:flex-start}
+.msg-bubble{padding:12px 16px;border-radius:var(--radius-lg);line-height:1.6;font-size:14px}
+.msg.user .msg-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.msg.assistant .msg-bubble{background:var(--bg-tertiary);color:var(--text-primary);border-bottom-left-radius:4px;border:1px solid var(--border)}
+.msg-meta{font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;align-items:center;gap:8px}
+.msg-copy{opacity:0;transition:var(--transition);cursor:pointer;padding:2px 6px;border-radius:4px;background:var(--bg-hover)}
+.msg:hover .msg-copy{opacity:1}
+.tool-step{font-size:12px;color:var(--text-dim);padding:4px 0;display:flex;align-items:center;gap:6px;font-family:var(--font-mono)}
+.tool-step::before{content:'▸';color:var(--accent)}
+.tool-step.done::before{content:'✓';color:var(--success)}
+.msg-bubble pre{background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin:8px 0;overflow-x:auto;font-family:var(--font-mono);font-size:12px}
+.msg-bubble code{font-family:var(--font-mono);font-size:12px;background:var(--bg-primary);padding:1px 5px;border-radius:4px}
+.typing-indicator{display:flex;gap:4px;align-items:center;padding:4px 0}
+.typing-dot{width:6px;height:6px;border-radius:50%;background:var(--text-dim);animation:bounce 1.2s infinite}
+.typing-dot:nth-child(2){animation-delay:.2s}
+.typing-dot:nth-child(3){animation-delay:.4s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-6px)}}
+.chat-input-area{padding:16px 20px;border-top:1px solid var(--border);background:var(--bg-secondary);flex-shrink:0}
+.chat-input-box{display:flex;align-items:flex-end;gap:10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px 14px;transition:var(--transition)}
+.chat-input-box:focus-within{border-color:var(--accent)}
+.chat-attach{color:var(--text-secondary);padding:4px;transition:var(--transition);flex-shrink:0}
+.chat-attach:hover{color:var(--accent)}
+#chat-input{flex:1;resize:none;max-height:160px;overflow-y:auto;line-height:1.5;color:var(--text-primary);font-size:14px;background:transparent}
+#chat-input::placeholder{color:var(--text-dim)}
+.chat-send{background:var(--accent);color:#fff;padding:6px 14px;border-radius:var(--radius);font-size:13px;font-weight:500;transition:var(--transition);flex-shrink:0}
+.chat-send:hover{background:var(--accent-hover)}
+.chat-send:disabled{opacity:0.4;cursor:not-allowed}
+.chat-hints{font-size:11px;color:var(--text-dim);margin-top:8px;display:flex;gap:12px}
+.chat-hints span{cursor:pointer;transition:var(--transition)}
+.chat-hints span:hover{color:var(--accent)}
+.cmd-dropdown{position:absolute;bottom:100%;left:0;right:0;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:8px;max-height:240px;overflow-y:auto;display:none;z-index:100}
+.cmd-dropdown.visible{display:block}
+.cmd-item{padding:10px 14px;cursor:pointer;transition:var(--transition);border-bottom:1px solid var(--border)}
+.cmd-item:last-child{border-bottom:none}
+.cmd-item:hover,.cmd-item.selected{background:var(--accent-soft)}
+.cmd-trigger{font-family:var(--font-mono);font-size:12px;color:var(--accent);font-weight:500}
+.cmd-desc{font-size:12px;color:var(--text-secondary);margin-top:2px}
+.chat-input-wrapper{position:relative}
+
+/* ── Right Panel ── */
+#context-panel{width:280px;min-width:280px;background:var(--bg-secondary);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.panel-section{padding:14px;border-bottom:1px solid var(--border)}
+.panel-label{font-size:10px;font-weight:600;letter-spacing:1px;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px}
+.panel-field{margin-bottom:10px}
+.panel-field label{font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px}
+.panel-select{width:100%;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:7px 10px;font-size:13px;color:var(--text-primary);cursor:pointer}
+.panel-select:focus{border-color:var(--accent);outline:none}
+.panel-btn{width:100%;padding:7px;border-radius:var(--radius);border:1px solid var(--border);color:var(--text-secondary);font-size:12px;margin-top:4px;transition:var(--transition);background:transparent}
+.panel-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.panel-btn-row{display:flex;gap:6px}
+.panel-btn-row .panel-btn{flex:1}
+.api-bar-wrap{background:var(--bg-tertiary);border-radius:var(--radius);height:6px;margin:8px 0 4px;overflow:hidden}
+.api-bar{height:100%;border-radius:var(--radius);background:var(--success);transition:width .3s ease}
+.api-bar.warn{background:var(--warning)}
+.api-bar.danger{background:var(--error)}
+.api-count{font-size:11px;color:var(--text-secondary)}
+.upload-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.upload-item:last-child{border-bottom:none}
+.upload-icon{font-size:14px}
+.upload-name{flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upload-remove{color:var(--text-dim);font-size:16px;line-height:1;transition:var(--transition);flex-shrink:0}
+.upload-remove:hover{color:var(--error)}
+.skill-item{display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:12px}
+.skill-status{width:6px;height:6px;border-radius:50%;background:var(--success)}
+.panel-link{font-size:12px;color:var(--accent);cursor:pointer;transition:var(--transition)}
+.panel-link:hover{color:var(--accent-hover)}
+
+/* ── Modals ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(2px)}
+.modal-overlay.open{display:flex}
+.modal{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-lg);width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+.modal-header{padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-title{font-family:var(--font-heading);font-size:16px;font-weight:600}
+.modal-close{color:var(--text-dim);font-size:20px;transition:var(--transition);padding:4px}
+.modal-close:hover{color:var(--text-primary)}
+.modal-body{padding:24px}
+.modal-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;font-weight:500}
+.form-input{width:100%;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;font-size:14px;color:var(--text-primary);transition:var(--transition)}
+.form-input:focus{border-color:var(--accent);outline:none}
+.form-select{width:100%;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;font-size:14px;color:var(--text-primary)}
+.btn-primary{background:var(--accent);color:#fff;padding:9px 20px;border-radius:var(--radius);font-size:14px;font-weight:500;transition:var(--transition)}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-secondary{background:transparent;color:var(--text-secondary);padding:9px 20px;border-radius:var(--radius);font-size:14px;border:1px solid var(--border);transition:var(--transition)}
+.btn-secondary:hover{border-color:var(--text-secondary);color:var(--text-primary)}
+.color-picker{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.color-swatch{width:24px;height:24px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:var(--transition)}
+.color-swatch.selected,.color-swatch:hover{border-color:#fff;transform:scale(1.15)}
+.conn-item{display:flex;align-items:center;justify-content:space-between;padding:14px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px}
+.conn-status{display:flex;align-items:center;gap:8px;font-size:13px}
+.conn-dot{width:8px;height:8px;border-radius:50%;background:var(--error)}
+.conn-dot.connected{background:var(--success)}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:var(--radius-pill);font-size:11px;font-weight:500}
+.badge-success{background:rgba(34,197,94,.15);color:var(--success)}
+.badge-warn{background:rgba(245,158,11,.15);color:var(--warning)}
+.badge-error{background:rgba(239,68,68,.15);color:var(--error)}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-size:13px;color:var(--text-primary);box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:9999;transform:translateY(8px);opacity:0;transition:all .25s ease;max-width:320px}
+.toast.show{transform:translateY(0);opacity:1}
+.drag-over{border:2px dashed var(--accent)!important;background:var(--accent-soft)!important}
+</style>
+</head>
+<body>
+
+<!-- Connect screen (shown when not authenticated) -->
+<div id="connect-screen">
+  <div style="font-family:var(--font-heading);font-size:32px;font-weight:700;color:var(--accent)">UPLINX</div>
+  <div style="color:var(--text-secondary);font-size:14px">Meta Manager — connect your accounts to get started</div>
+  <a href="/auth/meta" style="display:inline-flex;align-items:center;gap:10px;padding:12px 24px;background:var(--accent);color:#fff;border-radius:var(--radius);font-size:15px;font-weight:500;transition:var(--transition)" onmouseover="this.style.background='var(--accent-hover)'" onmouseout="this.style.background='var(--accent)'">
+    🔷 Connect Meta Account
+  </a>
+  <div style="color:var(--text-dim);font-size:13px">You'll be redirected to Facebook to authorize access</div>
+</div>
+
+<!-- Main app (hidden until authenticated) -->
+<div id="app" class="hidden">
+
+  <!-- LEFT SIDEBAR -->
+  <nav id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">UPLINX<span>Meta Manager</span></div>
+    </div>
+    <div class="sidebar-search">
+      <input type="text" id="client-search" placeholder="Search clients..." oninput="filterClients(this.value)">
+    </div>
+    <button class="sidebar-new-btn" onclick="openNewClientModal()">+ New Client</button>
+    <div class="sidebar-clients" id="client-list">
+      <div class="sidebar-section-label">CLIENTS</div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding:6px 12px">
+      <button class="sidebar-new-conv" onclick="newConversation()">+ New Conversation</button>
+    </div>
+    <div class="sidebar-bottom">
+      <div class="sidebar-nav">
+        <div class="sidebar-nav-item" onclick="openModal('connections-modal')">🔗 Connections</div>
+        <div class="sidebar-nav-item" onclick="openModal('skills-modal')">📋 Skills</div>
+        <div class="sidebar-nav-item" onclick="openModal('commands-modal')">⚡ Quick Commands</div>
+        <div class="sidebar-nav-item" onclick="openModal('settings-modal')">⚙️ Settings</div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- CENTER CHAT -->
+  <main id="chat-area">
+    <div class="chat-header">
+      <div>
+        <div class="chat-title" id="conv-title">Select or create a conversation</div>
+        <div class="chat-breadcrumb" id="conv-breadcrumb">No client selected</div>
+      </div>
+      <button class="chat-header-menu" title="Options">⋮</button>
+    </div>
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome-msg">
+        <div style="font-size:40px">🔷</div>
+        <h2>Uplinx Meta Manager</h2>
+        <p>Select a conversation from the sidebar, or create a new one to start managing your Meta campaigns with AI.</p>
+      </div>
+    </div>
+    <div class="chat-input-area">
+      <div class="chat-input-wrapper">
+        <div class="cmd-dropdown" id="cmd-dropdown"></div>
+        <div class="chat-input-box" id="drop-zone">
+          <button class="chat-attach" title="Attach file" onclick="document.getElementById('file-input').click()">📎</button>
+          <textarea id="chat-input" placeholder="Type a message… or / for commands" rows="1"
+            oninput="autoResize(this);handleInput(this)"
+            onkeydown="handleKeydown(event)"></textarea>
+          <button class="chat-send" id="send-btn" onclick="sendMessage()" disabled>Send →</button>
+        </div>
+      </div>
+      <div class="chat-hints">
+        <span onclick="document.getElementById('file-input').click()">📎 Attach file</span>
+        <span style="color:var(--text-dim)">Enter to send · Shift+Enter for new line</span>
+        <span id="skills-hint" onclick="openModal('skills-modal')">Skills: 0 active</span>
+      </div>
+      <input type="file" id="file-input" style="display:none" multiple onchange="handleFileSelect(this.files)" accept=".jpg,.jpeg,.png,.gif,.mp4,.mov,.pdf,.md">
+    </div>
+  </main>
+
+  <!-- RIGHT CONTEXT PANEL -->
+  <aside id="context-panel">
+    <div class="panel-section">
+      <div class="panel-label">Active Context</div>
+      <div id="panel-client-name" style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text-secondary)">No client selected</div>
+      <div class="panel-field">
+        <label>Ad Account</label>
+        <select class="panel-select" id="ctx-ad-account" onchange="updateContext('selected_ad_account_id',this.value);loadAccountAssets(this.value)">
+          <option value="">Select ad account…</option>
+        </select>
+      </div>
+      <div class="panel-field">
+        <label>Page</label>
+        <select class="panel-select" id="ctx-page" onchange="updateContext('selected_page_id',this.value)">
+          <option value="">Select page…</option>
+        </select>
+      </div>
+      <div class="panel-field">
+        <label>Pixel</label>
+        <select class="panel-select" id="ctx-pixel" onchange="updateContext('selected_pixel_id',this.value)">
+          <option value="">Select pixel…</option>
+        </select>
+      </div>
+      <div class="panel-field">
+        <label>Instagram</label>
+        <select class="panel-select" id="ctx-instagram" onchange="updateContext('selected_instagram_id',this.value)">
+          <option value="">Select account…</option>
+        </select>
+      </div>
+      <div class="panel-field">
+        <label>Timezone</label>
+        <select class="panel-select" id="ctx-timezone" onchange="updateContext('selected_timezone',this.value)">
+          <option value="UTC">UTC</option>
+          <option value="Europe/Madrid">Europe/Madrid</option>
+          <option value="Europe/Rome">Europe/Rome</option>
+          <option value="Europe/Paris">Europe/Paris</option>
+          <option value="Europe/London">Europe/London</option>
+          <option value="America/New_York">America/New_York</option>
+          <option value="America/Los_Angeles">America/Los_Angeles</option>
+        </select>
+      </div>
+      <div class="panel-btn-row">
+        <button class="panel-btn" onclick="refreshAssets()">↻ Refresh</button>
+        <button class="panel-btn" onclick="resetContext()">Reset</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">API Usage</div>
+      <div class="api-bar-wrap"><div class="api-bar" id="api-bar" style="width:0%"></div></div>
+      <div class="api-count" id="api-count">0 / 200 calls used</div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Uploaded Files</div>
+      <div id="upload-list"><div style="font-size:12px;color:var(--text-dim)">No files uploaded</div></div>
+      <button class="panel-btn" style="margin-top:8px" onclick="document.getElementById('file-input').click()">+ Upload Files</button>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-label">Skills Active</div>
+      <div id="skills-list"><div style="font-size:12px;color:var(--text-dim)">No skills loaded</div></div>
+      <div class="panel-link" style="margin-top:8px;display:block" onclick="openModal('skills-modal')">Manage Skills →</div>
+    </div>
+  </aside>
+</div>
+
+<!-- ── MODALS ── -->
+
+<!-- New Client Modal -->
+<div class="modal-overlay" id="new-client-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">New Client</div>
+      <button class="modal-close" onclick="closeModal('new-client-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Client Name *</label>
+        <input type="text" class="form-input" id="new-client-name" placeholder="e.g. Minci Delice">
+      </div>
+      <div class="form-group">
+        <label>Industry</label>
+        <select class="form-select" id="new-client-industry">
+          <option value="">Select industry…</option>
+          <option>Health</option><option>Fashion</option><option>Tech</option>
+          <option>Food</option><option>Finance</option><option>Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Website</label>
+        <input type="url" class="form-input" id="new-client-website" placeholder="https://example.com">
+      </div>
+      <div class="form-group">
+        <label>Color</label>
+        <div class="color-picker" id="color-picker"></div>
+        <input type="hidden" id="new-client-color" value="#6c63ff">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal('new-client-modal')">Cancel</button>
+      <button class="btn-primary" onclick="createClient()">Create Client</button>
+    </div>
+  </div>
+</div>
+
+<!-- Connections Modal -->
+<div class="modal-overlay" id="connections-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🔗 Connections</div>
+      <button class="modal-close" onclick="closeModal('connections-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="conn-item">
+        <div class="conn-status">
+          <div class="conn-dot" id="meta-conn-dot"></div>
+          <div>
+            <div style="font-weight:500">Meta / Facebook</div>
+            <div style="font-size:12px;color:var(--text-dim)" id="meta-conn-info">Not connected</div>
+          </div>
+        </div>
+        <a href="/auth/meta" class="btn-primary" style="font-size:12px;padding:6px 14px" id="meta-conn-btn">Connect</a>
+      </div>
+      <div class="conn-item">
+        <div class="conn-status">
+          <div class="conn-dot" id="google-conn-dot"></div>
+          <div>
+            <div style="font-weight:500">Google (Drive / Docs)</div>
+            <div style="font-size:12px;color:var(--text-dim)" id="google-conn-info">Not connected</div>
+          </div>
+        </div>
+        <a href="/auth/google" class="btn-primary" style="font-size:12px;padding:6px 14px" id="google-conn-btn">Connect</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Skills Modal -->
+<div class="modal-overlay" id="skills-modal">
+  <div class="modal" style="width:560px">
+    <div class="modal-header">
+      <div class="modal-title">📋 Skills</div>
+      <button class="modal-close" onclick="closeModal('skills-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="skills-modal-list" style="display:flex;flex-direction:column;gap:10px"></div>
+      <button class="btn-secondary" style="margin-top:16px;width:100%" onclick="openNewSkillForm()">+ Upload / Create Skill</button>
+      <div id="new-skill-form" style="display:none;margin-top:16px">
+        <div class="form-group"><label>Skill Name</label><input class="form-input" id="skill-name" placeholder="e.g. Brand Voice"></div>
+        <div class="form-group"><label>Description</label><input class="form-input" id="skill-desc" placeholder="What does this skill do?"></div>
+        <div class="form-group"><label>Content (Markdown)</label><textarea class="form-input" id="skill-content" rows="6" style="resize:vertical;font-family:var(--font-mono);font-size:12px"></textarea></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" onclick="document.getElementById('new-skill-form').style.display='none'">Cancel</button>
+          <button class="btn-primary" onclick="createSkill()">Save Skill</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Quick Commands Modal -->
+<div class="modal-overlay" id="commands-modal">
+  <div class="modal" style="width:560px">
+    <div class="modal-header">
+      <div class="modal-title">⚡ Quick Commands</div>
+      <button class="modal-close" onclick="closeModal('commands-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="commands-modal-list" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">⚙️ Settings</div>
+      <button class="modal-close" onclick="closeModal('settings-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="color:var(--text-secondary);font-size:13px;line-height:1.7">
+        <p>App is running at <code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px">http://localhost:8000</code></p>
+        <br>
+        <p>To configure the app, edit your <code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px">.env</code> file in the app directory.</p>
+        <br>
+        <p>To add API keys or change settings, stop the server, edit <code>.env</code>, and restart.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast notification -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+  clients: [], conversations: [], activeConvId: null,
+  activeClientId: null, quickCommands: [], uploads: [],
+  skills: [], metaConnected: false, googleConnected: false,
+  cmdSelectedIndex: -1,
+};
+
+// ── API helpers ────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 401) { showConnectScreen(); return null; }
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function toast(msg, type='info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderLeftColor = type==='error'?'var(--error)':type==='success'?'var(--success)':'var(--accent)';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+// ── Auth / screen ──────────────────────────────────────────────────────────
+function showConnectScreen() {
+  document.getElementById('connect-screen').classList.add('visible');
+  document.getElementById('app').classList.add('hidden');
+}
+function showApp() {
+  document.getElementById('connect-screen').classList.remove('visible');
+  document.getElementById('app').classList.remove('hidden');
+}
+
+// ── Clients ────────────────────────────────────────────────────────────────
+async function loadClients() {
+  const data = await api('GET', '/api/clients');
+  if (!data) return;
+  state.clients = data;
+  renderClients();
+}
+
+function renderClients(filter='') {
+  const el = document.getElementById('client-list');
+  const clients = state.clients.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()));
+  let html = '<div class="sidebar-section-label">CLIENTS</div>';
+  for (const c of clients) {
+    const isActive = c.id === state.activeClientId;
+    html += `<div class="client-item">
+      <div class="client-header${isActive?' active':''}" onclick="toggleClient(${c.id})">
+        <div class="client-dot" style="background:${c.color_tag||'#6c63ff'}"></div>
+        <div class="client-name">${c.name}</div>
+        <div class="client-chevron" id="chevron-${c.id}">▶</div>
+      </div>
+      <div class="client-children" id="client-children-${c.id}">`;
+    for (const aa of (c.ad_accounts||[])) {
+      html += `<div class="ad-account-item">
+        <div class="ad-account-header" onclick="selectAdAccount(${c.id},${aa.id},'${aa.nickname}')">
+          📁 ${aa.nickname}
+        </div>
+        <div class="ad-account-children" id="aa-convs-${aa.id}"></div>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function filterClients(v) { renderClients(v); }
+
+function toggleClient(clientId) {
+  const ch = document.getElementById(`client-children-${clientId}`);
+  const chev = document.getElementById(`chevron-${clientId}`);
+  const isOpen = ch.classList.contains('open');
+  ch.classList.toggle('open', !isOpen);
+  chev.classList.toggle('open', !isOpen);
+  if (!isOpen) { state.activeClientId = clientId; renderClients(); loadConversations(clientId); }
+}
+
+async function selectAdAccount(clientId, adAccountId, nickname) {
+  state.activeClientId = clientId;
+  document.getElementById('panel-client-name').textContent = nickname;
+  await loadConversations(clientId, adAccountId);
+  loadAccountDropdowns();
+}
+
+async function loadConversations(clientId, adAccountId) {
+  const data = await api('GET', `/api/conversations?client_id=${clientId}`);
+  if (!data) return;
+  state.conversations = data;
+  const container = adAccountId ? document.getElementById(`aa-convs-${adAccountId}`) : null;
+  if (container) {
+    container.classList.add('open');
+    container.innerHTML = data.map(c => `
+      <div class="conv-item${c.id===state.activeConvId?' active':''}${c.is_pinned?' pinned':''}" onclick="openConversation(${c.id})">
+        💬 ${c.title}
+      </div>`).join('');
+  }
+}
+
+// ── Conversations ──────────────────────────────────────────────────────────
+async function newConversation() {
+  const data = await api('POST', '/api/conversations', { title: 'New Conversation', client_id: state.activeClientId });
+  if (!data) return;
+  await openConversation(data.id);
+  if (state.activeClientId) loadConversations(state.activeClientId);
+}
+
+async function openConversation(convId) {
+  state.activeConvId = convId;
+  document.getElementById('send-btn').disabled = false;
+  const data = await api('GET', `/api/conversations/${convId}`);
+  if (!data) return;
+  document.getElementById('conv-title').textContent = data.title;
+  const msgs = document.getElementById('messages');
+  document.getElementById('welcome-msg').style.display = 'none';
+  msgs.innerHTML = '';
+  for (const m of (data.messages||[])) appendMessage(m.role, m.content);
+  msgs.scrollTop = msgs.scrollHeight;
+  loadContext(convId);
+  loadSkills();
+  refreshApiUsage();
+}
+
+function appendMessage(role, content) {
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  const safe = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/```([\s\S]*?)```/g,'<pre><code>$1</code></pre>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\n/g,'<br>');
+  div.innerHTML = `<div class="msg-bubble">${safe}</div>
+    <div class="msg-meta">
+      ${role==='user'?'You':'🔷 Uplinx'}
+      <span class="msg-copy" onclick="navigator.clipboard.writeText(${JSON.stringify(content)}).then(()=>toast('Copied!','success'))">Copy</span>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+function addTypingIndicator() {
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg assistant'; div.id = 'typing-indicator';
+  div.innerHTML = '<div class="msg-bubble"><div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div></div>';
+  msgs.appendChild(div); msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+// ── Chat / streaming ───────────────────────────────────────────────────────
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text || !state.activeConvId) return;
+  input.value = ''; autoResize(input);
+  document.getElementById('cmd-dropdown').classList.remove('visible');
+  appendMessage('user', text);
+  const sendBtn = document.getElementById('send-btn');
+  sendBtn.disabled = true;
+  const typing = addTypingIndicator();
+  try {
+    const resp = await fetch(`/api/chat/${state.activeConvId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, attachments: state.uploads.map(u=>u.path) }),
+    });
+    if (resp.status === 401) { showConnectScreen(); return; }
+    typing.remove();
+    const aiDiv = appendMessage('assistant', '');
+    const bubble = aiDiv.querySelector('.msg-bubble');
+    bubble.innerHTML = '';
+    let textContent = '';
+    await handleStream(resp, bubble, (t) => { textContent += t; });
+    aiDiv.querySelector('.msg-meta .msg-copy').onclick = () =>
+      navigator.clipboard.writeText(textContent).then(()=>toast('Copied!','success'));
+  } catch(e) {
+    typing.remove();
+    appendMessage('assistant', '⚠️ Error: ' + e.message);
+  } finally {
+    sendBtn.disabled = !state.activeConvId;
+    refreshApiUsage();
+  }
+}
+
+async function handleStream(response, container, onText) {
+  const reader = response.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const evt = JSON.parse(line.slice(6));
+        if (evt.type === 'text') {
+          const span = document.createElement('span');
+          span.textContent = evt.content;
+          container.appendChild(span);
+          onText(evt.content);
+          container.closest('.messages').scrollTop = 99999;
+        } else if (evt.type === 'tool_start') {
+          const d = document.createElement('div');
+          d.className = 'tool-step'; d.id = `tool-${evt.name}`;
+          d.textContent = `Running ${evt.name}…`;
+          container.appendChild(d);
+        } else if (evt.type === 'tool_result') {
+          const d = document.getElementById(`tool-${evt.name}`);
+          if (d) { d.classList.add('done'); d.textContent = `${evt.name} ✓`; }
+        } else if (evt.type === 'error') {
+          const d = document.createElement('div');
+          d.style.cssText='color:var(--error);font-size:12px;padding:4px 0';
+          d.textContent = '⚠️ ' + (evt.message||'Error');
+          container.appendChild(d);
+        }
+      } catch {}
+    }
+  }
+}
+
+// ── Input helpers ──────────────────────────────────────────────────────────
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+
+function handleKeydown(e) {
+  const dd = document.getElementById('cmd-dropdown');
+  if (dd.classList.contains('visible')) {
+    const items = dd.querySelectorAll('.cmd-item');
+    if (e.key === 'ArrowDown') { e.preventDefault(); state.cmdSelectedIndex=Math.min(state.cmdSelectedIndex+1,items.length-1); highlightCmd(items); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); state.cmdSelectedIndex=Math.max(state.cmdSelectedIndex-1,0); highlightCmd(items); return; }
+    if (e.key === 'Enter' && state.cmdSelectedIndex>=0) { e.preventDefault(); items[state.cmdSelectedIndex].click(); return; }
+    if (e.key === 'Escape') { dd.classList.remove('visible'); return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function highlightCmd(items) {
+  items.forEach((it,i)=>it.classList.toggle('selected',i===state.cmdSelectedIndex));
+}
+
+function handleInput(el) {
+  document.getElementById('send-btn').disabled = !el.value.trim() || !state.activeConvId;
+  const val = el.value;
+  const dd = document.getElementById('cmd-dropdown');
+  if (val.startsWith('/')) {
+    const q = val.slice(1).toLowerCase();
+    const matches = state.quickCommands.filter(c=>c.trigger.toLowerCase().includes(q)||c.name.toLowerCase().includes(q));
+    if (matches.length) {
+      dd.innerHTML = matches.map((c,i)=>`<div class="cmd-item" onclick="insertCommand('${c.prompt_template.replace(/'/g,"\\'")}')">
+        <div class="cmd-trigger">${c.trigger}</div>
+        <div class="cmd-desc">${c.name}</div>
+      </div>`).join('');
+      dd.classList.add('visible');
+      state.cmdSelectedIndex = -1;
+    } else dd.classList.remove('visible');
+  } else dd.classList.remove('visible');
+}
+
+function insertCommand(template) {
+  const input = document.getElementById('chat-input');
+  input.value = template;
+  autoResize(input);
+  document.getElementById('cmd-dropdown').classList.remove('visible');
+  document.getElementById('send-btn').disabled = false;
+  input.focus();
+}
+
+// ── File uploads ───────────────────────────────────────────────────────────
+async function handleFileSelect(files) {
+  for (const file of files) {
+    const fd = new FormData(); fd.append('file', file);
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!r.ok) { toast('Upload failed: ' + file.name, 'error'); continue; }
+      const data = await r.json();
+      state.uploads.push(data);
+      renderUploads();
+      toast('Uploaded: ' + file.name, 'success');
+    } catch(e) { toast('Upload error: ' + e.message, 'error'); }
+  }
+}
+
+function renderUploads() {
+  const el = document.getElementById('upload-list');
+  if (!state.uploads.length) { el.innerHTML = '<div style="font-size:12px;color:var(--text-dim)">No files uploaded</div>'; return; }
+  const icons = { image:'🖼', video:'🎬', pdf:'📄', markdown:'📝' };
+  el.innerHTML = state.uploads.map((u,i)=>`<div class="upload-item">
+    <span class="upload-icon">${icons[u.type]||'📎'}</span>
+    <span class="upload-name" title="${u.name}">${u.name}</span>
+    <button class="upload-remove" onclick="removeUpload(${i})">×</button>
+  </div>`).join('');
+}
+
+async function removeUpload(i) {
+  const u = state.uploads[i];
+  await fetch(`/api/uploads/${u.file_id}`, { method: 'DELETE' });
+  state.uploads.splice(i, 1);
+  renderUploads();
+}
+
+// Drag and drop
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFileSelect(e.dataTransfer.files); });
+
+// ── Context panel ──────────────────────────────────────────────────────────
+async function loadContext(convId) {
+  const data = await api('GET', `/api/conversations/${convId}/context`);
+  if (!data) return;
+  setSelectVal('ctx-ad-account', data.selected_ad_account_id);
+  setSelectVal('ctx-page', data.selected_page_id);
+  setSelectVal('ctx-pixel', data.selected_pixel_id);
+  setSelectVal('ctx-instagram', data.selected_instagram_id);
+  setSelectVal('ctx-timezone', data.selected_timezone || 'UTC');
+}
+
+function setSelectVal(id, val) { if (val) document.getElementById(id).value = val; }
+
+async function updateContext(field, value) {
+  if (!state.activeConvId) return;
+  await api('PUT', `/api/conversations/${state.activeConvId}/context`, { [field]: value });
+}
+
+async function loadAccountDropdowns() {
+  const [adAccounts, pages] = await Promise.all([
+    api('GET', '/api/meta/ad-accounts'),
+    api('GET', '/api/meta/pages'),
+  ]);
+  if (adAccounts) populateSelect('ctx-ad-account', (adAccounts.data||[]).map(a=>({value:a.id,label:a.name||a.account_id})));
+  if (pages) populateSelect('ctx-page', (pages.data||[]).map(p=>({value:p.id,label:p.name})));
+}
+
+async function loadAccountAssets(adAccountId) {
+  if (!adAccountId) return;
+  const [pixels, pageId] = await Promise.all([
+    api('GET', `/api/meta/pixels/${adAccountId}`),
+    Promise.resolve(document.getElementById('ctx-page').value),
+  ]);
+  if (pixels) populateSelect('ctx-pixel', (pixels.data||[]).map(p=>({value:p.id,label:p.name})));
+  if (pageId) {
+    const ig = await api('GET', `/api/meta/instagram/${pageId}`);
+    if (ig) populateSelect('ctx-instagram', (ig.data||[]).map(a=>({value:a.id,label:a.username||a.id})));
+  }
+}
+
+function populateSelect(id, options) {
+  const el = document.getElementById(id);
+  const current = el.value;
+  el.innerHTML = '<option value="">Select…</option>' + options.map(o=>`<option value="${o.value}">${o.label}</option>`).join('');
+  if (current) el.value = current;
+}
+
+async function refreshAssets() { await loadAccountDropdowns(); toast('Assets refreshed', 'success'); }
+async function resetContext() {
+  if (!state.activeConvId) return;
+  await api('PUT', `/api/conversations/${state.activeConvId}/context`, { selected_ad_account_id: null, selected_page_id: null, selected_pixel_id: null, selected_instagram_id: null });
+  toast('Context reset', 'success');
+}
+
+// ── API usage ──────────────────────────────────────────────────────────────
+async function refreshApiUsage() {
+  const data = await api('GET', '/api/api-usage');
+  if (!data) return;
+  const pct = (data.calls_used / data.calls_limit) * 100;
+  const bar = document.getElementById('api-bar');
+  bar.style.width = pct + '%';
+  bar.className = 'api-bar' + (pct>=85?' danger':pct>=50?' warn':'');
+  document.getElementById('api-count').textContent = `${data.calls_used} / ${data.calls_limit} calls used`;
+}
+
+// ── Skills ─────────────────────────────────────────────────────────────────
+async function loadSkills() {
+  const data = await api('GET', '/api/skills');
+  if (!data) return;
+  state.skills = data;
+  const active = data.filter(s=>s.is_active);
+  document.getElementById('skills-hint').textContent = `Skills: ${active.length} active`;
+  const el = document.getElementById('skills-list');
+  el.innerHTML = active.length ? active.map(s=>`<div class="skill-item"><div style="display:flex;align-items:center;gap:6px"><div class="skill-status"></div>${s.name}</div></div>`).join('') : '<div style="font-size:12px;color:var(--text-dim)">No skills active</div>';
+  renderSkillsModal(data);
+}
+
+function renderSkillsModal(skills) {
+  document.getElementById('skills-modal-list').innerHTML = skills.map(s=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius)">
+      <div><div style="font-weight:500;font-size:13px">${s.name}</div><div style="font-size:11px;color:var(--text-dim)">${s.description||''} · ${s.client_id?'Client':'Global'}</div></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" ${s.is_active?'checked':''} onchange="toggleSkill(${s.id},this.checked)"> Active
+        </label>
+        <button style="color:var(--error);font-size:18px;padding:2px 6px" onclick="deleteSkill(${s.id})">×</button>
+      </div>
+    </div>`).join('');
+}
+
+function openNewSkillForm() { document.getElementById('new-skill-form').style.display='block'; }
+
+async function createSkill() {
+  const name = document.getElementById('skill-name').value.trim();
+  const content = document.getElementById('skill-content').value.trim();
+  if (!name || !content) { toast('Name and content required','error'); return; }
+  const r = await api('POST', '/api/skills', { name, description: document.getElementById('skill-desc').value, content });
+  if (r) { toast('Skill created!','success'); document.getElementById('new-skill-form').style.display='none'; loadSkills(); }
+}
+
+async function toggleSkill(id, active) {
+  await api('PATCH', `/api/skills/${id}/toggle`, { is_active: active });
+  loadSkills();
+}
+
+async function deleteSkill(id) {
+  if (!confirm('Delete this skill?')) return;
+  await api('DELETE', `/api/skills/${id}`);
+  loadSkills();
+}
+
+// ── Quick commands ──────────────────────────────────────────────────────────
+async function loadQuickCommands() {
+  const data = await api('GET', '/api/quick-commands');
+  if (!data) return;
+  state.quickCommands = data;
+  document.getElementById('commands-modal-list').innerHTML = data.map(c=>`
+    <div style="padding:10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius)">
+      <div style="display:flex;justify-content:space-between;align-items:start">
+        <div><span style="font-family:var(--font-mono);font-size:12px;color:var(--accent);font-weight:500">${c.trigger}</span> — <span style="font-size:12px;font-weight:500">${c.name}</span></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.prompt_template.slice(0,80)}…</div>
+    </div>`).join('');
+}
+
+// ── Connections status ──────────────────────────────────────────────────────
+async function loadConnectionStatus() {
+  const [meta, google] = await Promise.all([
+    api('GET', '/api/accounts/meta').catch(()=>null),
+    api('GET', '/api/accounts/google').catch(()=>null),
+  ]);
+  if (meta && meta.length) {
+    const acc = meta.find(a=>a.is_current) || meta[0];
+    document.getElementById('meta-conn-dot').classList.add('connected');
+    document.getElementById('meta-conn-info').textContent = acc.user_name || acc.user_email || 'Connected';
+    document.getElementById('meta-conn-btn').textContent = 'Reconnect';
+    state.metaConnected = true;
+  }
+  if (google && google.length) {
+    const acc = google.find(a=>a.is_current) || google[0];
+    document.getElementById('google-conn-dot').classList.add('connected');
+    document.getElementById('google-conn-info').textContent = acc.user_name || acc.user_email || 'Connected';
+    document.getElementById('google-conn-btn').textContent = 'Reconnect';
+    state.googleConnected = true;
+  }
+}
+
+// ── Clients (create) ────────────────────────────────────────────────────────
+const COLORS = ['#6c63ff','#22c55e','#f59e0b','#ef4444','#06b6d4','#a855f7','#f97316','#ec4899','#10b981','#3b82f6','#8b5cf6','#e11d48'];
+function openNewClientModal() {
+  const picker = document.getElementById('color-picker');
+  picker.innerHTML = COLORS.map(c=>`<div class="color-swatch${c==='#6c63ff'?' selected':''}" style="background:${c}" onclick="selectColor('${c}',this)" title="${c}"></div>`).join('');
+  openModal('new-client-modal');
+}
+function selectColor(hex, el) {
+  document.getElementById('new-client-color').value = hex;
+  document.querySelectorAll('.color-swatch').forEach(s=>s.classList.remove('selected'));
+  el.classList.add('selected');
+}
+async function createClient() {
+  const name = document.getElementById('new-client-name').value.trim();
+  if (!name) { toast('Client name is required','error'); return; }
+  const r = await api('POST', '/api/clients', {
+    name, industry: document.getElementById('new-client-industry').value,
+    website: document.getElementById('new-client-website').value,
+    color_tag: document.getElementById('new-client-color').value,
+  });
+  if (r) { toast('Client created!','success'); closeModal('new-client-modal'); loadClients(); }
+}
+
+// ── Modals ─────────────────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if(e.target===m) m.classList.remove('open'); }));
+
+// ── Init ───────────────────────────────────────────────────────────────────
+async function init() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('error')) toast('Connection error: ' + params.get('error'), 'error');
+  if (params.get('connected')) toast('Connected successfully!', 'success');
+  try {
+    const check = await fetch('/api/accounts/meta');
+    if (check.status === 401) { showConnectScreen(); return; }
+    showApp();
+    await Promise.all([loadClients(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage()]);
+  } catch(e) { showConnectScreen(); }
+}
+
+init();
+</script>
+</body>
+</html>
