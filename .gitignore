@@ -1,0 +1,15 @@
+.env
+*.pickle
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+# Credential files — never commit these
+*service_account*.json
+*credentials*.json
+*oauth*.json
+*.pickle
+.env
