@@ -1,0 +1,179 @@
+"""
+config.py — Application settings for Uplinx Meta Manager.
+
+Loads configuration from a .env file using pydantic-settings.
+A singleton ``settings`` instance is exported for use across the application.
+"""
+
+from __future__ import annotations
+
+from typing import List
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """All runtime configuration for Uplinx Meta Manager.
+
+    Values are read from environment variables or a ``.env`` file located in
+    the working directory.  Every attribute maps 1-to-1 to an environment
+    variable of the same name (case-insensitive on most platforms).
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ------------------------------------------------------------------
+    # Meta / Facebook
+    # ------------------------------------------------------------------
+
+    META_APP_ID: str = ""
+    """Facebook App ID obtained from the Meta developer dashboard."""
+
+    META_APP_SECRET: str = ""
+    """Facebook App Secret — keep out of source control."""
+
+    META_API_VERSION: str = "v21.0"
+    """Graph API version, e.g. ``v21.0``."""
+
+    META_REDIRECT_URI: str = "http://localhost:8000/auth/meta/callback"
+    """OAuth redirect URI registered in the Meta app settings."""
+
+    # ------------------------------------------------------------------
+    # Google
+    # ------------------------------------------------------------------
+
+    GOOGLE_CLIENT_ID: str = ""
+    """Google OAuth 2.0 client ID."""
+
+    GOOGLE_CLIENT_SECRET: str = ""
+    """Google OAuth 2.0 client secret."""
+
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
+    """OAuth redirect URI registered in the Google Cloud Console."""
+
+    # ------------------------------------------------------------------
+    # Anthropic / Claude
+    # ------------------------------------------------------------------
+
+    ANTHROPIC_API_KEY: str = ""
+    """Anthropic API key used to authenticate Claude API requests."""
+
+    # ------------------------------------------------------------------
+    # Security
+    # ------------------------------------------------------------------
+
+    SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"
+    """Secret key used to sign session tokens (itsdangerous / JWT)."""
+
+    ENCRYPTION_KEY: str = ""
+    """Fernet symmetric encryption key (base-64 url-safe, 32 bytes).
+
+    Generate with::
+
+        from cryptography.fernet import Fernet
+        print(Fernet.generate_key().decode())
+    """
+
+    # ------------------------------------------------------------------
+    # Server / CORS
+    # ------------------------------------------------------------------
+
+    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1"]
+    """Hosts allowed to access the API (used for CORS / trusted-host middleware)."""
+
+    # ------------------------------------------------------------------
+    # File handling
+    # ------------------------------------------------------------------
+
+    MAX_UPLOAD_SIZE_MB: int = 100
+    """Maximum file upload size in megabytes."""
+
+    # ------------------------------------------------------------------
+    # Caching
+    # ------------------------------------------------------------------
+
+    CACHE_TTL_SECONDS: int = 3600
+    """Default time-to-live for cached API responses, in seconds."""
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    LOG_LEVEL: str = "INFO"
+    """Python logging level name (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``)."""
+
+    # ------------------------------------------------------------------
+    # Maintenance
+    # ------------------------------------------------------------------
+
+    AUTO_CLEAR_UPLOADS_HOURS: int = 24
+    """Number of hours after which uploaded files are automatically purged."""
+
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
+
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        """Ensure LOG_LEVEL is a recognised Python logging level name."""
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in allowed:
+            raise ValueError(f"LOG_LEVEL must be one of {allowed}, got {v!r}")
+        return upper
+
+    @field_validator("META_API_VERSION")
+    @classmethod
+    def validate_api_version(cls, v: str) -> str:
+        """Ensure META_API_VERSION follows the ``vNN.N`` pattern."""
+        import re
+
+        if not re.match(r"^v\d+\.\d+$", v):
+            raise ValueError(
+                f"META_API_VERSION must match 'vNN.N' format, got {v!r}"
+            )
+        return v
+
+    @field_validator("MAX_UPLOAD_SIZE_MB")
+    @classmethod
+    def validate_upload_size(cls, v: int) -> int:
+        """Upload size must be a positive integer."""
+        if v <= 0:
+            raise ValueError("MAX_UPLOAD_SIZE_MB must be a positive integer")
+        return v
+
+    @field_validator("CACHE_TTL_SECONDS")
+    @classmethod
+    def validate_cache_ttl(cls, v: int) -> int:
+        """Cache TTL must be a positive integer."""
+        if v <= 0:
+            raise ValueError("CACHE_TTL_SECONDS must be a positive integer")
+        return v
+
+    # ------------------------------------------------------------------
+    # Derived helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        """Return :attr:`MAX_UPLOAD_SIZE_MB` converted to bytes."""
+        return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+    @property
+    def meta_graph_base_url(self) -> str:
+        """Fully-qualified base URL for the Meta Graph API."""
+        return f"https://graph.facebook.com/{self.META_API_VERSION}"
+
+
+# ---------------------------------------------------------------------------
+# Singleton — import this throughout the application
+# ---------------------------------------------------------------------------
+
+settings = Settings()

@@ -1,0 +1,1216 @@
+"""
+claude_agent.py — Claude AI agent integration for Uplinx Meta Manager.
+
+Provides a streaming, tool-using Claude agent that orchestrates Meta advertising
+operations via the MCP server tools.  Responses are streamed to the client as
+SSE (Server-Sent Events).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import AsyncGenerator, Optional, Any
+
+import anthropic
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+logger = logging.getLogger("uplinx")
+
+BASE_SYSTEM_PROMPT = """You are Uplinx Meta Manager — an expert Meta advertising \
+and social media agent with deep knowledge of Facebook and Instagram advertising, \
+campaign management, creative strategy, and performance analytics.
+
+You execute tasks autonomously using your tools. When a user gives you an instruction, \
+break it into steps and complete all of them without asking unnecessary questions.
+
+Core behaviours:
+- Always confirm before: delete, pause all, bulk operations
+- Use upload_multiple_ads for any multi-ad task — never upload one at a time
+- Read active context (client, ad account, page, pixel) before every Meta operation
+- For analytics: always give actionable recommendations, not just raw numbers
+- When files are uploaded or a folder path is given: scan and process immediately
+- When a Google Doc or PDF is shared: read it fully before starting any task
+- Match Post/Story image pairs automatically by filename
+- Apply naming conventions from active skills
+- Never ask for credentials — they are handled automatically
+- Report completed tasks with IDs for reference
+- Flag anomalies proactively: high CPM, low ROAS, disapproved ads, expiring tokens
+- If context is incomplete: ask only for what is missing, then proceed immediately"""
+
+# Maximum number of agentic turns before aborting to prevent runaway loops
+_MAX_AGENTIC_TURNS = 20
+# Per-tool call timeout in seconds
+_TOOL_TIMEOUT_SECONDS = 30
+
+
+class ClaudeAgent:
+    """Streaming Claude agent with full tool-use support."""
+
+    def __init__(self) -> None:
+        from config import settings
+
+        self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.model = "claude-opus-4-7"
+        self.max_tokens = 4096
+
+    # ------------------------------------------------------------------
+    # Database helpers
+    # ------------------------------------------------------------------
+
+    async def get_conversation_messages(
+        self,
+        conversation_id: int,
+        db: AsyncSession,
+        limit: int = 20,
+    ) -> list[dict]:
+        """
+        Load the last *limit* messages from the DB for a conversation.
+
+        Messages are returned in chronological order (oldest first) so they
+        can be passed directly to the Claude messages API.
+        """
+        from database import Message
+
+        stmt = (
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.id.desc())
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        rows = list(reversed(result.scalars().all()))
+
+        messages: list[dict] = []
+        for row in rows:
+            msg: dict = {"role": row.role, "content": row.content}
+            # tool_calls is stored as JSON; restore it if present
+            if row.tool_calls:
+                msg["tool_calls"] = row.tool_calls
+            messages.append(msg)
+
+        return messages
+
+    async def save_message(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        tool_calls: Optional[list],
+        tokens_used: int,
+        db: AsyncSession,
+    ) -> None:
+        """Persist a message to the database."""
+        from database import Message
+
+        msg = Message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tokens_used=tokens_used,
+        )
+        db.add(msg)
+        await db.flush()
+        logger.debug(
+            "Saved message role=%s conversation_id=%d tokens=%d",
+            role,
+            conversation_id,
+            tokens_used,
+        )
+
+    # ------------------------------------------------------------------
+    # System prompt construction
+    # ------------------------------------------------------------------
+
+    async def build_system_prompt(
+        self,
+        conversation_id: int,
+        client_id: Optional[int],
+        db: AsyncSession,
+    ) -> str:
+        """
+        Build the full system prompt: base + active context summary + skills.
+
+        Active context (ad account, page, pixel, etc.) is loaded from the DB
+        for the conversation.  Skills are loaded via skills_manager and
+        injected after the context block.
+        """
+        from database import ActiveContext, Client, ClientAdAccount
+        from skills_manager import load_skills_for_conversation, build_skills_system_prompt
+
+        parts: list[str] = [BASE_SYSTEM_PROMPT]
+
+        # --- Active context ---
+        ctx_stmt = select(ActiveContext).where(
+            ActiveContext.conversation_id == conversation_id
+        )
+        ctx_result = await db.execute(ctx_stmt)
+        ctx: Optional[ActiveContext] = ctx_result.scalar_one_or_none()
+
+        context_lines: list[str] = []
+
+        # Client info
+        if client_id is not None:
+            client_row = await db.get(Client, client_id)
+            if client_row:
+                context_lines.append(f"- Active client: {client_row.name}")
+                if client_row.industry:
+                    context_lines.append(f"- Industry: {client_row.industry}")
+
+        if ctx is not None:
+            if ctx.selected_ad_account_id:
+                context_lines.append(f"- Ad Account ID: {ctx.selected_ad_account_id}")
+            if ctx.selected_page_id:
+                context_lines.append(f"- Facebook Page ID: {ctx.selected_page_id}")
+            if ctx.selected_pixel_id:
+                context_lines.append(f"- Pixel ID: {ctx.selected_pixel_id}")
+            if ctx.selected_instagram_id:
+                context_lines.append(f"- Instagram Account ID: {ctx.selected_instagram_id}")
+            if ctx.selected_timezone and ctx.selected_timezone != "UTC":
+                context_lines.append(f"- Client timezone: {ctx.selected_timezone}")
+            if ctx.selected_meta_account_id:
+                context_lines.append(
+                    f"- Connected Meta User ID: {ctx.selected_meta_account_id}"
+                )
+
+        if context_lines:
+            parts.append("\n## Active Context\n" + "\n".join(context_lines))
+        else:
+            parts.append(
+                "\n## Active Context\nNo context selected. "
+                "Ask the user to select a client and ad account if required."
+            )
+
+        # --- Skills ---
+        try:
+            skills = await load_skills_for_conversation(conversation_id, client_id, db)
+            skills_section = await build_skills_system_prompt(skills)
+            if skills_section:
+                parts.append("\n" + skills_section)
+        except Exception as exc:
+            logger.warning("Could not load skills for system prompt: %s", exc)
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Streaming response
+    # ------------------------------------------------------------------
+
+    async def stream_response(
+        self,
+        conversation_id: int,
+        user_message: str,
+        session_data: dict,
+        db: AsyncSession,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Main streaming entry-point.  Yields SSE-formatted strings.
+
+        Flow:
+        1. Save user message to DB.
+        2. Load conversation history (last 20 messages).
+        3. Build system prompt.
+        4. Stream Claude response with tool-use support.
+        5. On tool_use blocks: execute tools (parallel when possible).
+        6. Continue the conversation with tool results until Claude stops.
+        7. Save assistant response to DB.
+        8. Yield ``data: [DONE]\\n\\n``.
+
+        SSE event types: ``text``, ``tool_start``, ``tool_result``, ``error``, ``done``.
+        """
+        client_id: Optional[int] = session_data.get("client_id")
+
+        def _sse(payload: dict) -> str:
+            return f"data: {json.dumps(payload)}\n\n"
+
+        # 1. Save user message
+        try:
+            await self.save_message(
+                conversation_id=conversation_id,
+                role="user",
+                content=user_message,
+                tool_calls=None,
+                tokens_used=0,
+                db=db,
+            )
+        except Exception as exc:
+            logger.error("Failed to save user message: %s", exc)
+            yield _sse({"type": "error", "message": f"Database error: {exc}"})
+            return
+
+        # 2. Load history
+        try:
+            history = await self.get_conversation_messages(
+                conversation_id, db, limit=20
+            )
+        except Exception as exc:
+            logger.error("Failed to load conversation history: %s", exc)
+            yield _sse({"type": "error", "message": f"Database error: {exc}"})
+            return
+
+        # 3. Build system prompt
+        try:
+            system_prompt = await self.build_system_prompt(
+                conversation_id, client_id, db
+            )
+        except Exception as exc:
+            logger.warning("Could not build full system prompt, using base: %s", exc)
+            system_prompt = BASE_SYSTEM_PROMPT
+
+        # Build the messages list for the API call.
+        # The history already includes the user message we just saved, but
+        # get_conversation_messages returns what was in the DB *before* this
+        # call (the flush may not have committed yet in the same session).
+        # To be safe we append the new user message explicitly if not present.
+        messages: list[dict] = list(history)
+        if not messages or messages[-1].get("content") != user_message:
+            messages.append({"role": "user", "content": user_message})
+
+        tool_definitions = self.get_tool_definitions()
+        full_response_text = ""
+        total_tokens = 0
+        all_tool_calls: list[dict] = []
+
+        # 4–6. Agentic loop — keep calling Claude until it stops or we hit the turn limit.
+        for turn in range(_MAX_AGENTIC_TURNS):
+            try:
+                accumulated_text = ""
+                pending_tool_uses: list[dict] = []  # {id, name, input_json_str}
+
+                async with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tool_definitions,
+                ) as stream:
+                    current_tool_id: Optional[str] = None
+                    current_tool_name: Optional[str] = None
+                    current_tool_input_parts: list[str] = []
+
+                    async for event in stream:
+                        event_type = event.type
+
+                        # --- Text streaming ---
+                        if event_type == "content_block_start":
+                            block = event.content_block
+                            if block.type == "text":
+                                # Nothing to do; text comes via deltas
+                                pass
+                            elif block.type == "tool_use":
+                                current_tool_id = block.id
+                                current_tool_name = block.name
+                                current_tool_input_parts = []
+                                yield _sse({"type": "tool_start", "name": block.name})
+
+                        elif event_type == "content_block_delta":
+                            delta = event.delta
+                            if delta.type == "text_delta":
+                                accumulated_text += delta.text
+                                yield _sse({"type": "text", "text": delta.text})
+                            elif delta.type == "input_json_delta":
+                                if current_tool_input_parts is not None:
+                                    current_tool_input_parts.append(
+                                        delta.partial_json
+                                    )
+
+                        elif event_type == "content_block_stop":
+                            if current_tool_id is not None:
+                                raw_input = "".join(current_tool_input_parts)
+                                try:
+                                    tool_input = json.loads(raw_input) if raw_input else {}
+                                except json.JSONDecodeError:
+                                    tool_input = {}
+                                pending_tool_uses.append(
+                                    {
+                                        "id": current_tool_id,
+                                        "name": current_tool_name,
+                                        "input": tool_input,
+                                    }
+                                )
+                                current_tool_id = None
+                                current_tool_name = None
+                                current_tool_input_parts = []
+
+                        elif event_type == "message_delta":
+                            # Track token usage
+                            if hasattr(event, "usage") and event.usage:
+                                total_tokens += getattr(event.usage, "output_tokens", 0)
+
+                        elif event_type == "message_stop":
+                            pass  # handled below via stream.get_final_message()
+
+                # Retrieve the completed message object for stop_reason + usage
+                final_message = await stream.get_final_message()
+                stop_reason: str = final_message.stop_reason or "end_turn"
+                if final_message.usage:
+                    total_tokens = (
+                        final_message.usage.input_tokens
+                        + final_message.usage.output_tokens
+                    )
+
+            except anthropic.APIConnectionError as exc:
+                logger.error("Anthropic connection error: %s", exc)
+                yield _sse({"type": "error", "message": "Connection to Claude failed. Please retry."})
+                return
+            except anthropic.RateLimitError as exc:
+                logger.error("Anthropic rate limit: %s", exc)
+                yield _sse({"type": "error", "message": "Rate limit reached. Please wait a moment and retry."})
+                return
+            except anthropic.APIStatusError as exc:
+                logger.error("Anthropic API error %d: %s", exc.status_code, exc.message)
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": f"Claude API error ({exc.status_code}): {exc.message}",
+                    }
+                )
+                return
+            except Exception as exc:
+                logger.error("Unexpected error in stream_response: %s", exc, exc_info=True)
+                yield _sse({"type": "error", "message": f"Unexpected error: {exc}"})
+                return
+
+            full_response_text += accumulated_text
+
+            # --- No tool calls — we're done ---
+            if stop_reason == "end_turn" or not pending_tool_uses:
+                break
+
+            # --- Execute tool calls ---
+            # Append the assistant's turn (with tool_use blocks) to messages
+            assistant_content: list[dict] = []
+            if accumulated_text:
+                assistant_content.append({"type": "text", "text": accumulated_text})
+            for tu in pending_tool_uses:
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tu["id"],
+                        "name": tu["name"],
+                        "input": tu["input"],
+                    }
+                )
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            # Run all independent tool calls in parallel
+            async def _run_tool(tu: dict) -> tuple[str, str, str]:
+                """Execute one tool and return (tool_id, name, result_str)."""
+                try:
+                    result_str = await asyncio.wait_for(
+                        self.execute_tool(
+                            tu["name"], tu["input"], session_data, db
+                        ),
+                        timeout=_TOOL_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    result_str = json.dumps(
+                        {
+                            "error": f"Tool '{tu['name']}' timed out after "
+                            f"{_TOOL_TIMEOUT_SECONDS}s"
+                        }
+                    )
+                except Exception as exc:
+                    result_str = json.dumps({"error": str(exc)})
+                return tu["id"], tu["name"], result_str
+
+            tool_tasks = [_run_tool(tu) for tu in pending_tool_uses]
+            tool_results: list[tuple[str, str, str]] = await asyncio.gather(*tool_tasks)
+
+            # Yield tool_result events and build the tool result message
+            tool_result_content: list[dict] = []
+            for tool_id, tool_name, result_str in tool_results:
+                yield _sse(
+                    {
+                        "type": "tool_result",
+                        "name": tool_name,
+                        "result": result_str[:500],
+                    }
+                )
+                tool_result_content.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": result_str,
+                    }
+                )
+                all_tool_calls.append(
+                    {"name": tool_name, "input": next(
+                        tu["input"] for tu in pending_tool_uses if tu["id"] == tool_id
+                    )}
+                )
+
+            messages.append({"role": "user", "content": tool_result_content})
+
+            # Continue the loop to get Claude's next response
+            if stop_reason == "tool_use":
+                continue
+            break
+
+        else:
+            logger.warning(
+                "Reached max agentic turns (%d) for conversation_id=%d",
+                _MAX_AGENTIC_TURNS,
+                conversation_id,
+            )
+            yield _sse(
+                {
+                    "type": "text",
+                    "text": "\n\n[Max tool-use turns reached. Stopping.]",
+                }
+            )
+            full_response_text += "\n\n[Max tool-use turns reached. Stopping.]"
+
+        # 7. Save assistant response to DB
+        try:
+            await self.save_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=full_response_text,
+                tool_calls=all_tool_calls if all_tool_calls else None,
+                tokens_used=total_tokens,
+                db=db,
+            )
+        except Exception as exc:
+            logger.error("Failed to save assistant message: %s", exc)
+
+        # 8. Signal completion
+        yield _sse({"type": "done"})
+        yield "data: [DONE]\n\n"
+
+    # ------------------------------------------------------------------
+    # Tool execution
+    # ------------------------------------------------------------------
+
+    async def execute_tool(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        session_data: dict,
+        db: AsyncSession,
+    ) -> str:
+        """
+        Dispatch a tool call from Claude to the appropriate MCP server function.
+
+        Returns a JSON string result to be fed back to Claude as a tool_result.
+        Each call is wrapped in a try/except so an error never crashes the loop.
+        """
+        logger.info("Executing tool: %s  input_keys=%s", tool_name, list(tool_input.keys()))
+
+        try:
+            # Import lazily to avoid circular imports at module load time
+            import mcp_server  # type: ignore[import]
+
+            handler = getattr(mcp_server, tool_name, None)
+            if handler is None:
+                return json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+            # Inject db + session_data so MCP functions can access DB/tokens
+            result = await handler(db=db, session_data=session_data, **tool_input)
+
+            if isinstance(result, (dict, list)):
+                return json.dumps(result)
+            return str(result)
+
+        except ImportError:
+            # mcp_server not installed in this environment — return a stub
+            logger.debug("mcp_server module not available; returning stub for %s", tool_name)
+            return json.dumps(
+                {
+                    "tool": tool_name,
+                    "status": "unavailable",
+                    "message": "MCP server module not installed in this environment.",
+                    "input": tool_input,
+                }
+            )
+        except Exception as exc:
+            logger.error("Tool '%s' raised an exception: %s", tool_name, exc, exc_info=True)
+            return json.dumps({"error": str(exc), "tool": tool_name})
+
+    # ------------------------------------------------------------------
+    # Tool definitions (Claude API schema)
+    # ------------------------------------------------------------------
+
+    def get_tool_definitions(self) -> list[dict]:
+        """
+        Return the full list of tool definitions for the Claude messages API.
+
+        Each entry follows the Anthropic tool schema::
+
+            {
+                "name": str,
+                "description": str,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {...},
+                    "required": [...]
+                }
+            }
+        """
+        return [
+            # ----------------------------------------------------------
+            # Meta account discovery
+            # ----------------------------------------------------------
+            {
+                "name": "list_ad_accounts",
+                "description": (
+                    "List all Meta ad accounts accessible to the connected user. "
+                    "Returns account IDs, names, currency, and status."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "meta_account_id": {
+                            "type": "string",
+                            "description": "Connected Meta user account ID. Omit to use active context.",
+                        }
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "list_pages",
+                "description": (
+                    "List all Facebook Pages accessible to the connected user. "
+                    "Returns page IDs, names, and categories."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "meta_account_id": {
+                            "type": "string",
+                            "description": "Connected Meta user account ID. Omit to use active context.",
+                        }
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "list_pixels",
+                "description": (
+                    "List all Meta Pixels (datasets) for a given ad account."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID (e.g. 'act_123456'). Omit to use active context.",
+                        }
+                    },
+                    "required": [],
+                },
+            },
+            # ----------------------------------------------------------
+            # Campaigns
+            # ----------------------------------------------------------
+            {
+                "name": "create_campaign",
+                "description": (
+                    "Create a new Meta ad campaign. Returns the new campaign ID."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID (e.g. 'act_123456').",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Campaign name.",
+                        },
+                        "objective": {
+                            "type": "string",
+                            "description": "Campaign objective, e.g. OUTCOME_SALES, OUTCOME_TRAFFIC.",
+                            "enum": [
+                                "OUTCOME_SALES",
+                                "OUTCOME_TRAFFIC",
+                                "OUTCOME_LEADS",
+                                "OUTCOME_ENGAGEMENT",
+                                "OUTCOME_APP_PROMOTION",
+                                "OUTCOME_AWARENESS",
+                            ],
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Initial campaign status.",
+                            "enum": ["ACTIVE", "PAUSED"],
+                            "default": "ACTIVE",
+                        },
+                        "daily_budget": {
+                            "type": "number",
+                            "description": "Daily budget in the account's currency (minor units, e.g. cents).",
+                        },
+                        "special_ad_categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Special ad categories, e.g. ['NONE'].",
+                        },
+                    },
+                    "required": ["ad_account_id", "name", "objective"],
+                },
+            },
+            {
+                "name": "get_campaigns",
+                "description": (
+                    "Retrieve all campaigns for an ad account with their status, "
+                    "budget, and spend."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID.",
+                        },
+                        "status_filter": {
+                            "type": "string",
+                            "description": "Filter by status: ACTIVE, PAUSED, ARCHIVED, or ALL.",
+                            "default": "ALL",
+                        },
+                    },
+                    "required": ["ad_account_id"],
+                },
+            },
+            {
+                "name": "pause_campaign",
+                "description": "Pause a running Meta campaign by ID.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {
+                            "type": "string",
+                            "description": "Campaign ID to pause.",
+                        }
+                    },
+                    "required": ["campaign_id"],
+                },
+            },
+            {
+                "name": "activate_campaign",
+                "description": "Activate (unpause) a Meta campaign by ID.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {
+                            "type": "string",
+                            "description": "Campaign ID to activate.",
+                        }
+                    },
+                    "required": ["campaign_id"],
+                },
+            },
+            {
+                "name": "delete_campaign",
+                "description": (
+                    "Permanently delete a Meta campaign. "
+                    "Always confirm with the user before calling this."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {
+                            "type": "string",
+                            "description": "Campaign ID to delete.",
+                        }
+                    },
+                    "required": ["campaign_id"],
+                },
+            },
+            # ----------------------------------------------------------
+            # Ad sets
+            # ----------------------------------------------------------
+            {
+                "name": "create_ad_set",
+                "description": (
+                    "Create a new ad set within a campaign. "
+                    "Defines targeting, budget, placements, and schedule."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {
+                            "type": "string",
+                            "description": "Parent campaign ID.",
+                        },
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID.",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Ad set name.",
+                        },
+                        "daily_budget": {
+                            "type": "number",
+                            "description": "Daily budget in minor currency units.",
+                        },
+                        "targeting": {
+                            "type": "object",
+                            "description": (
+                                "Targeting spec object. Common fields: "
+                                "geo_locations, age_min, age_max, genders."
+                            ),
+                        },
+                        "optimization_goal": {
+                            "type": "string",
+                            "description": "Optimization goal, e.g. OFFSITE_CONVERSIONS, LINK_CLICKS.",
+                        },
+                        "billing_event": {
+                            "type": "string",
+                            "description": "Billing event, e.g. IMPRESSIONS.",
+                            "default": "IMPRESSIONS",
+                        },
+                        "pixel_id": {
+                            "type": "string",
+                            "description": "Pixel ID for conversion tracking.",
+                        },
+                        "instagram_actor_id": {
+                            "type": "string",
+                            "description": "Instagram account ID for Instagram placements.",
+                        },
+                        "start_time": {
+                            "type": "string",
+                            "description": "ISO-8601 start datetime.",
+                        },
+                        "end_time": {
+                            "type": "string",
+                            "description": "ISO-8601 end datetime.",
+                        },
+                    },
+                    "required": ["campaign_id", "ad_account_id", "name", "daily_budget"],
+                },
+            },
+            # ----------------------------------------------------------
+            # Ad creative & upload
+            # ----------------------------------------------------------
+            {
+                "name": "upload_single_ad",
+                "description": (
+                    "Upload a single ad creative to Meta and create the ad. "
+                    "Prefer upload_multiple_ads for batches."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ad_set_id": {
+                            "type": "string",
+                            "description": "Ad set ID to attach the ad to.",
+                        },
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID.",
+                        },
+                        "image_path": {
+                            "type": "string",
+                            "description": "Local path to the image file.",
+                        },
+                        "ad_name": {
+                            "type": "string",
+                            "description": "Display name for the ad.",
+                        },
+                        "headline": {
+                            "type": "string",
+                            "description": "Ad headline (max 40 chars).",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Ad body copy.",
+                        },
+                        "call_to_action": {
+                            "type": "string",
+                            "description": "CTA button type, e.g. SHOP_NOW, LEARN_MORE.",
+                            "default": "SHOP_NOW",
+                        },
+                        "page_id": {
+                            "type": "string",
+                            "description": "Facebook Page ID.",
+                        },
+                        "instagram_actor_id": {
+                            "type": "string",
+                            "description": "Instagram account ID for Instagram placement.",
+                        },
+                        "link_url": {
+                            "type": "string",
+                            "description": "Destination URL.",
+                        },
+                        "placement": {
+                            "type": "string",
+                            "description": "Placement hint: 'feed' or 'story'.",
+                            "enum": ["feed", "story"],
+                            "default": "feed",
+                        },
+                    },
+                    "required": [
+                        "ad_set_id",
+                        "ad_account_id",
+                        "image_path",
+                        "ad_name",
+                        "page_id",
+                    ],
+                },
+            },
+            {
+                "name": "upload_multiple_ads",
+                "description": (
+                    "Upload multiple ads in a batch. "
+                    "Use this for any task involving more than one ad. "
+                    "Accepts a list of ad specs and processes them efficiently."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID.",
+                        },
+                        "ad_set_id": {
+                            "type": "string",
+                            "description": "Ad set ID to attach all ads to.",
+                        },
+                        "ads": {
+                            "type": "array",
+                            "description": "List of ad spec objects (same fields as upload_single_ad).",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "image_path": {"type": "string"},
+                                    "ad_name": {"type": "string"},
+                                    "headline": {"type": "string"},
+                                    "body": {"type": "string"},
+                                    "call_to_action": {"type": "string"},
+                                    "link_url": {"type": "string"},
+                                    "placement": {
+                                        "type": "string",
+                                        "enum": ["feed", "story"],
+                                    },
+                                },
+                                "required": ["image_path", "ad_name"],
+                            },
+                        },
+                        "page_id": {
+                            "type": "string",
+                            "description": "Facebook Page ID.",
+                        },
+                        "instagram_actor_id": {
+                            "type": "string",
+                            "description": "Instagram account ID.",
+                        },
+                    },
+                    "required": ["ad_account_id", "ad_set_id", "ads", "page_id"],
+                },
+            },
+            # ----------------------------------------------------------
+            # Analytics
+            # ----------------------------------------------------------
+            {
+                "name": "get_performance_report",
+                "description": (
+                    "Get aggregated performance metrics (spend, ROAS, CPM, CTR, CPC, "
+                    "impressions, clicks, conversions) for all active campaigns in an "
+                    "ad account over a date range."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ad_account_id": {
+                            "type": "string",
+                            "description": "Meta ad account ID.",
+                        },
+                        "date_preset": {
+                            "type": "string",
+                            "description": (
+                                "Date range preset. Options: last_7d, last_14d, "
+                                "last_30d, this_month, last_month."
+                            ),
+                            "default": "last_7d",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Custom start date in YYYY-MM-DD format.",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "Custom end date in YYYY-MM-DD format.",
+                        },
+                        "breakdown": {
+                            "type": "string",
+                            "description": "Optional breakdown: age, gender, country, placement.",
+                        },
+                    },
+                    "required": ["ad_account_id"],
+                },
+            },
+            {
+                "name": "get_campaign_performance",
+                "description": (
+                    "Get detailed performance metrics for a specific campaign, "
+                    "broken down by ad set and individual ad."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {
+                            "type": "string",
+                            "description": "Campaign ID to report on.",
+                        },
+                        "date_preset": {
+                            "type": "string",
+                            "description": "Date range preset (last_7d, last_14d, last_30d, etc.).",
+                            "default": "last_7d",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Custom start date YYYY-MM-DD.",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "Custom end date YYYY-MM-DD.",
+                        },
+                    },
+                    "required": ["campaign_id"],
+                },
+            },
+            # ----------------------------------------------------------
+            # Post scheduling
+            # ----------------------------------------------------------
+            {
+                "name": "schedule_post",
+                "description": (
+                    "Schedule an image post on Facebook or Instagram at a specific time."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "page_id": {
+                            "type": "string",
+                            "description": "Facebook Page ID to post from.",
+                        },
+                        "instagram_account_id": {
+                            "type": "string",
+                            "description": "Instagram account ID for Instagram posts.",
+                        },
+                        "image_path": {
+                            "type": "string",
+                            "description": "Local path to the image file.",
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "Post caption / copy.",
+                        },
+                        "scheduled_time": {
+                            "type": "string",
+                            "description": "ISO-8601 datetime when to publish the post.",
+                        },
+                        "platform": {
+                            "type": "string",
+                            "description": "Target platform.",
+                            "enum": ["facebook", "instagram", "both"],
+                            "default": "both",
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Timezone name for the scheduled time, e.g. 'Europe/Madrid'.",
+                            "default": "UTC",
+                        },
+                    },
+                    "required": ["image_path", "caption", "scheduled_time"],
+                },
+            },
+            {
+                "name": "schedule_reel",
+                "description": (
+                    "Schedule a Reel (short video) on Facebook or Instagram."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "page_id": {
+                            "type": "string",
+                            "description": "Facebook Page ID.",
+                        },
+                        "instagram_account_id": {
+                            "type": "string",
+                            "description": "Instagram account ID.",
+                        },
+                        "video_path": {
+                            "type": "string",
+                            "description": "Local path to the video file (mp4 or mov).",
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "Reel caption.",
+                        },
+                        "scheduled_time": {
+                            "type": "string",
+                            "description": "ISO-8601 datetime when to publish.",
+                        },
+                        "platform": {
+                            "type": "string",
+                            "enum": ["facebook", "instagram", "both"],
+                            "default": "both",
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Timezone name.",
+                            "default": "UTC",
+                        },
+                    },
+                    "required": ["video_path", "caption", "scheduled_time"],
+                },
+            },
+            {
+                "name": "get_scheduled_posts",
+                "description": (
+                    "List all scheduled posts for a client, optionally filtered by "
+                    "date range or platform."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "client_id": {
+                            "type": "integer",
+                            "description": "Client DB ID. Omit to use active context.",
+                        },
+                        "platform": {
+                            "type": "string",
+                            "description": "Filter by platform: facebook, instagram, or all.",
+                            "default": "all",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "Start of date range (YYYY-MM-DD).",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "End of date range (YYYY-MM-DD).",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "cancel_scheduled_post",
+                "description": "Cancel a scheduled post by its DB ID.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "integer",
+                            "description": "DB ID of the scheduled post to cancel.",
+                        }
+                    },
+                    "required": ["post_id"],
+                },
+            },
+            # ----------------------------------------------------------
+            # Document / file reading
+            # ----------------------------------------------------------
+            {
+                "name": "read_google_doc",
+                "description": (
+                    "Read the full text content of a Google Doc by URL or document ID. "
+                    "Use this to read copy documents, briefs, or strategy documents."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "doc_url_or_id": {
+                            "type": "string",
+                            "description": "Google Doc URL or document ID.",
+                        }
+                    },
+                    "required": ["doc_url_or_id"],
+                },
+            },
+            {
+                "name": "read_google_sheet",
+                "description": (
+                    "Read data from a Google Sheet by URL or spreadsheet ID. "
+                    "Returns rows as a list of lists."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "sheet_url_or_id": {
+                            "type": "string",
+                            "description": "Google Sheets URL or spreadsheet ID.",
+                        },
+                        "sheet_name": {
+                            "type": "string",
+                            "description": "Sheet tab name. Defaults to the first sheet.",
+                        },
+                        "range": {
+                            "type": "string",
+                            "description": "A1 notation range, e.g. 'A1:Z100'. Omit for all data.",
+                        },
+                    },
+                    "required": ["sheet_url_or_id"],
+                },
+            },
+            {
+                "name": "read_pdf",
+                "description": (
+                    "Extract and return the full text content of a PDF file. "
+                    "Works with uploaded files or local paths."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Local file path to the PDF.",
+                        }
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "read_local_folder",
+                "description": (
+                    "Scan a local folder and list all image/video files inside it. "
+                    "Use this before uploading ads from a folder."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "folder_path": {
+                            "type": "string",
+                            "description": "Absolute or relative path to the folder.",
+                        },
+                        "extensions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "File extensions to include, e.g. ['jpg', 'png']. "
+                                "Defaults to all image and video types."
+                            ),
+                        },
+                    },
+                    "required": ["folder_path"],
+                },
+            },
+            {
+                "name": "match_post_story_pairs",
+                "description": (
+                    "Scan a folder and automatically match Post/Story image pairs by "
+                    "filename. Files with 'Post' in the name are paired with files "
+                    "containing 'Story' that share the same numeric prefix. "
+                    "Returns matched pairs and unmatched files."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "folder_path": {
+                            "type": "string",
+                            "description": "Path to the folder containing the ad images.",
+                        }
+                    },
+                    "required": ["folder_path"],
+                },
+            },
+        ]

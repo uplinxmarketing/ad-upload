@@ -1,0 +1,1151 @@
+"""
+Uplinx Meta Manager — FastAPI application.
+All routes, OAuth flows, session management, and API endpoints.
+"""
+import asyncio
+import json
+import logging
+import secrets
+import urllib.parse
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
+from pydantic import BaseModel
+from sqlalchemy import select, delete, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from config import settings
+from database import (
+    init_db, get_db,
+    ConnectedMetaAccount, ConnectedGoogleAccount,
+    Client, ClientAdAccount, ClientInstagramAccount,
+    Conversation, Message, ActiveContext,
+    Skill, QuickCommand, ScheduledPost, ImageCache
+)
+from security import (
+    FernetEncryption, setup_logging,
+    generate_oauth_state, verify_oauth_state,
+    create_session_token, verify_session_token,
+    sanitize_text, validate_file_extension,
+    validate_mime_type, sanitize_filename
+)
+import meta_api
+import google_api
+from file_processor import process_uploaded_file, cleanup_old_uploads
+from skills_manager import (
+    initialize_default_skills, initialize_default_quick_commands,
+    get_all_skills, create_skill, update_skill,
+    toggle_skill, delete_skill, get_quick_commands, create_quick_command
+)
+from claude_agent import ClaudeAgent
+from rate_limiter import api_tracker
+
+logger = setup_logging()
+encryption = FernetEncryption()
+agent = ClaudeAgent()
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+_bg_tasks: list[asyncio.Task] = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    async with get_db() as db:  # type: ignore[attr-defined]
+        await initialize_default_skills(db)
+        await initialize_default_quick_commands(db)
+    _bg_tasks.append(asyncio.create_task(_cleanup_uploads_loop()))
+    _bg_tasks.append(asyncio.create_task(_token_refresh_loop()))
+    logger.info("Uplinx Meta Manager started")
+    yield
+    for task in _bg_tasks:
+        task.cancel()
+    logger.info("Uplinx Meta Manager stopped")
+
+async def _cleanup_uploads_loop() -> None:
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            count = await cleanup_old_uploads(settings.AUTO_CLEAR_UPLOADS_HOURS)
+            if count:
+                logger.info("Auto-cleaned %d upload(s)", count)
+        except Exception as exc:
+            logger.warning("Upload cleanup error: %s", exc)
+
+async def _token_refresh_loop() -> None:
+    """Check for Meta tokens expiring within 7 days and attempt refresh."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            async for db in get_db():
+                threshold = datetime.utcnow() + timedelta(days=7)
+                result = await db.execute(
+                    select(ConnectedMetaAccount).where(
+                        ConnectedMetaAccount.is_active == True,
+                        ConnectedMetaAccount.token_expiry <= threshold,
+                    )
+                )
+                accounts = result.scalars().all()
+                for acc in accounts:
+                    token = encryption.decrypt(acc.encrypted_long_token)
+                    refresh = await meta_api.exchange_for_long_lived_token(
+                        token, settings.META_APP_ID, settings.META_APP_SECRET
+                    )
+                    if refresh.get("success") and refresh.get("data", {}).get("access_token"):
+                        new_token = refresh["data"]["access_token"]
+                        acc.encrypted_long_token = encryption.encrypt(new_token)
+                        expiry_days = refresh["data"].get("expires_in", 5184000) // 86400
+                        acc.token_expiry = datetime.utcnow() + timedelta(days=expiry_days)
+                        await db.commit()
+                        logger.info("Refreshed token for %s", acc.facebook_user_id)
+        except Exception as exc:
+            logger.warning("Token refresh loop error: %s", exc)
+
+# ── App ───────────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Uplinx Meta Manager", version="1.0.0", lifespan=lifespan)
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Session helpers ────────────────────────────────────────────────────────────
+
+SESSION_COOKIE = "uplinx_session"
+PUBLIC_PATHS = {"/health", "/", "/auth/meta", "/auth/meta/callback",
+                "/auth/google", "/auth/google/callback"}
+
+@app.middleware("http")
+async def session_middleware(request: Request, call_next):
+    if (request.url.path in PUBLIC_PATHS
+            or request.url.path.startswith("/static")
+            or request.url.path.startswith("/frontend")):
+        return await call_next(request)
+
+    token = request.cookies.get(SESSION_COOKIE)
+    session = verify_session_token(token) if token else None
+    if session is None:
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"error": "Not authenticated"}, status_code=401)
+        return RedirectResponse("/")
+
+    request.state.session = session
+    return await call_next(request)
+
+
+def get_session(request: Request) -> dict:
+    return getattr(request.state, "session", {})
+
+
+async def get_meta_token(request: Request, db: AsyncSession) -> str:
+    """Decrypt and return the active Meta access token, refreshing if near expiry."""
+    session = get_session(request)
+    uid = session.get("meta_user_id")
+    if not uid:
+        raise HTTPException(401, "Meta account not connected")
+    result = await db.execute(
+        select(ConnectedMetaAccount).where(
+            ConnectedMetaAccount.facebook_user_id == uid,
+            ConnectedMetaAccount.is_active == True,
+        )
+    )
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(401, "Meta account not found")
+    if acc.token_expiry and acc.token_expiry < datetime.utcnow():
+        raise HTTPException(401, "Meta token expired — please reconnect")
+    acc.last_used_at = datetime.utcnow()
+    await db.commit()
+    return encryption.decrypt(acc.encrypted_long_token)
+
+
+async def get_google_token(request: Request, db: AsyncSession) -> str:
+    """Decrypt and return Google access token, refreshing if expired."""
+    session = get_session(request)
+    uid = session.get("google_user_id")
+    if not uid:
+        raise HTTPException(401, "Google account not connected")
+    from database import ConnectedGoogleAccount
+    result = await db.execute(
+        select(ConnectedGoogleAccount).where(
+            ConnectedGoogleAccount.google_user_id == uid,
+            ConnectedGoogleAccount.is_active == True,
+        )
+    )
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(401, "Google account not found")
+    if acc.token_expiry and acc.token_expiry < datetime.utcnow():
+        refresh = await google_api.refresh_access_token(
+            encryption.decrypt(acc.encrypted_refresh_token),
+            settings.GOOGLE_CLIENT_ID,
+            settings.GOOGLE_CLIENT_SECRET,
+        )
+        if not refresh.get("success"):
+            raise HTTPException(401, "Google token expired — please reconnect")
+        acc.encrypted_access_token = encryption.encrypt(refresh["access_token"])
+        acc.token_expiry = datetime.utcnow() + timedelta(seconds=refresh.get("expires_in", 3600))
+        await db.commit()
+    return encryption.decrypt(acc.encrypted_access_token)
+
+# ── Pydantic request models ────────────────────────────────────────────────────
+
+class CreateClientRequest(BaseModel):
+    name: str
+    industry: Optional[str] = None
+    website: Optional[str] = None
+    notes: Optional[str] = None
+    color_tag: str = "#6c63ff"
+
+class UpdateClientRequest(BaseModel):
+    name: Optional[str] = None
+    industry: Optional[str] = None
+    website: Optional[str] = None
+    notes: Optional[str] = None
+    color_tag: Optional[str] = None
+    is_archived: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+class CreateAdAccountRequest(BaseModel):
+    nickname: str
+    meta_account_id: str
+    default_page_id: Optional[str] = None
+    default_page_name: Optional[str] = None
+    default_pixel_id: Optional[str] = None
+    default_pixel_name: Optional[str] = None
+    default_instagram_id: Optional[str] = None
+    default_instagram_username: Optional[str] = None
+    default_daily_budget: Optional[float] = None
+    default_countries: Optional[list[str]] = None
+    default_age_min: int = 18
+    default_age_max: int = 65
+    default_timezone: str = "UTC"
+    default_objective: str = "OUTCOME_SALES"
+    is_default: bool = False
+
+class CreateConversationRequest(BaseModel):
+    client_id: Optional[int] = None
+    client_ad_account_id: Optional[int] = None
+    title: str = "New Conversation"
+
+class UpdateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    is_pinned: Optional[bool] = None
+    is_archived: Optional[bool] = None
+
+class ChatRequest(BaseModel):
+    message: str
+    attachments: list[str] = []
+
+class UpdateContextRequest(BaseModel):
+    selected_meta_account_id: Optional[str] = None
+    selected_ad_account_id: Optional[str] = None
+    selected_page_id: Optional[str] = None
+    selected_pixel_id: Optional[str] = None
+    selected_instagram_id: Optional[str] = None
+    selected_timezone: Optional[str] = None
+    overrides: Optional[dict] = None
+
+class CreateSkillRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    content: str
+    client_id: Optional[int] = None
+
+class UpdateSkillRequest(BaseModel):
+    content: str
+    description: Optional[str] = None
+
+class CreateQuickCommandRequest(BaseModel):
+    trigger: str
+    name: str
+    description: Optional[str] = None
+    prompt_template: str
+    client_id: Optional[int] = None
+
+class CreateCampaignRequest(BaseModel):
+    ad_account_id: str
+    name: str
+    objective: str = "OUTCOME_SALES"
+    daily_budget_euros: float = 10.0
+    status: str = "ACTIVE"
+
+# ── Health & frontend ──────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "1.0.0"}
+
+@app.get("/", response_class=HTMLResponse)
+async def frontend():
+    html_path = Path("frontend/index.html")
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Uplinx Meta Manager</h1><p>Frontend not found.</p>")
+
+# ── Meta OAuth ────────────────────────────────────────────────────────────────
+
+META_SCOPES = ",".join([
+    "ads_management", "ads_read", "pages_show_list",
+    "pages_read_engagement", "pages_manage_ads", "pages_manage_posts",
+    "read_insights", "instagram_basic", "instagram_content_publish",
+    "instagram_manage_insights", "instagram_manage_contents",
+    "publish_video", "business_management", "attribution_read",
+])
+
+@app.get("/auth/meta")
+async def auth_meta(request: Request, response: Response):
+    state = generate_oauth_state()
+    response.set_cookie("oauth_state", state, max_age=600, httponly=True, samesite="lax")
+    params = urllib.parse.urlencode({
+        "client_id": settings.META_APP_ID,
+        "redirect_uri": settings.META_REDIRECT_URI,
+        "scope": META_SCOPES,
+        "response_type": "code",
+        "state": state,
+    })
+    return RedirectResponse(f"https://www.facebook.com/dialog/oauth?{params}", headers=response.headers)
+
+@app.get("/auth/meta/callback")
+async def auth_meta_callback(
+    request: Request,
+    response: Response,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    if error:
+        return RedirectResponse(f"/?error={urllib.parse.quote(error)}")
+
+    expected_state = request.cookies.get("oauth_state", "")
+    if not verify_oauth_state(state, expected_state):
+        return RedirectResponse("/?error=invalid_state")
+
+    # Exchange code → short-lived token
+    short = await meta_api.exchange_code_for_token(
+        code, settings.META_APP_ID, settings.META_APP_SECRET, settings.META_REDIRECT_URI
+    )
+    if not short.get("success"):
+        return RedirectResponse(f"/?error={urllib.parse.quote(short.get('error', 'token_exchange_failed'))}")
+
+    short_token = short["data"].get("access_token", "")
+
+    # Exchange → long-lived token
+    long = await meta_api.exchange_for_long_lived_token(
+        short_token, settings.META_APP_ID, settings.META_APP_SECRET
+    )
+    if not long.get("success"):
+        return RedirectResponse("/?error=long_token_failed")
+
+    long_token = long["data"].get("access_token", "")
+    expires_in = long["data"].get("expires_in", 5184000)
+
+    # Fetch user info
+    user = await meta_api.get_user_info(long_token)
+    if not user.get("success"):
+        return RedirectResponse("/?error=user_info_failed")
+
+    uid = user["data"].get("id", "")
+    name = user["data"].get("name", "")
+    email = user["data"].get("email", "")
+
+    # Store in DB
+    result = await db.execute(
+        select(ConnectedMetaAccount).where(ConnectedMetaAccount.facebook_user_id == uid)
+    )
+    acc = result.scalar_one_or_none()
+    now = datetime.utcnow()
+    if acc:
+        acc.encrypted_short_token = encryption.encrypt(short_token)
+        acc.encrypted_long_token = encryption.encrypt(long_token)
+        acc.token_expiry = now + timedelta(seconds=expires_in)
+        acc.user_name = name
+        acc.user_email = email
+        acc.is_active = True
+        acc.last_used_at = now
+    else:
+        acc = ConnectedMetaAccount(
+            facebook_user_id=uid,
+            user_name=name,
+            user_email=email,
+            encrypted_short_token=encryption.encrypt(short_token),
+            encrypted_long_token=encryption.encrypt(long_token),
+            token_expiry=now + timedelta(seconds=expires_in),
+            created_at=now,
+            last_used_at=now,
+            is_active=True,
+        )
+        db.add(acc)
+    await db.commit()
+
+    # Create signed session
+    session_token = create_session_token({"meta_user_id": uid})
+    redirect = RedirectResponse("/?connected=meta")
+    redirect.set_cookie(
+        SESSION_COOKIE, session_token,
+        max_age=28800, httponly=True, samesite="lax"
+    )
+    redirect.delete_cookie("oauth_state")
+    return redirect
+
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+
+GOOGLE_SCOPES = " ".join([
+    "openid", "email", "profile",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+])
+
+@app.get("/auth/google")
+async def auth_google(request: Request, response: Response):
+    state = generate_oauth_state()
+    response.set_cookie("oauth_state_google", state, max_age=600, httponly=True, samesite="lax")
+    params = urllib.parse.urlencode({
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "scope": GOOGLE_SCOPES,
+        "response_type": "code",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}", headers=response.headers)
+
+@app.get("/auth/google/callback")
+async def auth_google_callback(
+    request: Request,
+    response: Response,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    if error:
+        return RedirectResponse(f"/?error={urllib.parse.quote(error)}")
+
+    expected = request.cookies.get("oauth_state_google", "")
+    if not verify_oauth_state(state, expected):
+        return RedirectResponse("/?error=invalid_state")
+
+    tokens = await google_api.exchange_code_for_tokens(
+        code, settings.GOOGLE_CLIENT_ID, settings.GOOGLE_CLIENT_SECRET, settings.GOOGLE_REDIRECT_URI
+    )
+    if not tokens.get("success"):
+        return RedirectResponse(f"/?error=google_token_failed")
+
+    access_token = tokens.get("access_token", "")
+    refresh_token = tokens.get("refresh_token", "")
+    expires_in = tokens.get("expires_in", 3600)
+
+    user = await google_api.get_user_info(access_token)
+    if not user.get("success"):
+        return RedirectResponse("/?error=google_user_failed")
+
+    uid = user.get("id", "")
+    email = user.get("email", "")
+    name = user.get("name", "")
+
+    from database import ConnectedGoogleAccount
+    result = await db.execute(
+        select(ConnectedGoogleAccount).where(ConnectedGoogleAccount.google_user_id == uid)
+    )
+    acc = result.scalar_one_or_none()
+    now = datetime.utcnow()
+    if acc:
+        acc.encrypted_access_token = encryption.encrypt(access_token)
+        if refresh_token:
+            acc.encrypted_refresh_token = encryption.encrypt(refresh_token)
+        acc.token_expiry = now + timedelta(seconds=expires_in)
+        acc.is_active = True
+    else:
+        acc = ConnectedGoogleAccount(
+            google_user_id=uid,
+            user_email=email,
+            user_name=name,
+            encrypted_access_token=encryption.encrypt(access_token),
+            encrypted_refresh_token=encryption.encrypt(refresh_token) if refresh_token else "",
+            token_expiry=now + timedelta(seconds=expires_in),
+            created_at=now,
+            is_active=True,
+        )
+        db.add(acc)
+    await db.commit()
+
+    # Merge google_user_id into existing session or create new one
+    existing_token = request.cookies.get(SESSION_COOKIE)
+    existing_session = verify_session_token(existing_token) if existing_token else {}
+    existing_session["google_user_id"] = uid
+    session_token = create_session_token(existing_session)
+    redirect = RedirectResponse("/?connected=google")
+    redirect.set_cookie(SESSION_COOKIE, session_token, max_age=28800, httponly=True, samesite="lax")
+    redirect.delete_cookie("oauth_state_google")
+    return redirect
+
+@app.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE)
+    return {"success": True}
+
+# ── Account API routes ─────────────────────────────────────────────────────────
+
+@app.get("/api/accounts/meta")
+async def api_meta_accounts(request: Request, db: AsyncSession = Depends(get_db)):
+    """List connected Meta accounts (no tokens exposed)."""
+    session = get_session(request)
+    result = await db.execute(
+        select(ConnectedMetaAccount).where(ConnectedMetaAccount.is_active == True)
+    )
+    accounts = result.scalars().all()
+    return [
+        {
+            "id": a.id,
+            "facebook_user_id": a.facebook_user_id,
+            "user_name": a.user_name,
+            "user_email": a.user_email,
+            "token_expiry": a.token_expiry.isoformat() if a.token_expiry else None,
+            "last_used_at": a.last_used_at.isoformat() if a.last_used_at else None,
+            "is_current": a.facebook_user_id == session.get("meta_user_id"),
+        }
+        for a in accounts
+    ]
+
+
+@app.delete("/api/accounts/meta/{account_id}")
+async def api_disconnect_meta(account_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ConnectedMetaAccount).where(ConnectedMetaAccount.id == account_id))
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(404, "Account not found")
+    acc.is_active = False
+    await db.commit()
+    return {"success": True}
+
+
+@app.get("/api/accounts/google")
+async def api_google_accounts(request: Request, db: AsyncSession = Depends(get_db)):
+    session = get_session(request)
+    result = await db.execute(
+        select(ConnectedGoogleAccount).where(ConnectedGoogleAccount.is_active == True)
+    )
+    accounts = result.scalars().all()
+    return [
+        {
+            "id": a.id,
+            "google_user_id": a.google_user_id,
+            "user_name": a.user_name,
+            "user_email": a.user_email,
+            "token_expiry": a.token_expiry.isoformat() if a.token_expiry else None,
+            "is_current": a.google_user_id == session.get("google_user_id"),
+        }
+        for a in accounts
+    ]
+
+
+@app.delete("/api/accounts/google/{account_id}")
+async def api_disconnect_google(account_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ConnectedGoogleAccount).where(ConnectedGoogleAccount.id == account_id))
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(404, "Account not found")
+    acc.is_active = False
+    await db.commit()
+    return {"success": True}
+
+
+@app.get("/api/meta/ad-accounts")
+async def api_ad_accounts(request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.get_ad_accounts(token)
+    if not result.get("success"):
+        raise HTTPException(502, result.get("error", "Meta API error"))
+    return result["data"]
+
+
+@app.get("/api/meta/pages")
+async def api_pages(request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.get_pages(token)
+    if not result.get("success"):
+        raise HTTPException(502, result.get("error", "Meta API error"))
+    return result["data"]
+
+
+@app.get("/api/meta/pixels/{ad_account_id}")
+async def api_pixels(ad_account_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.get_pixels(token, ad_account_id)
+    if not result.get("success"):
+        raise HTTPException(502, result.get("error", "Meta API error"))
+    return result["data"]
+
+
+@app.get("/api/meta/instagram/{page_id}")
+async def api_instagram(page_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.get_instagram_accounts(token, page_id)
+    if not result.get("success"):
+        raise HTTPException(502, result.get("error", "Meta API error"))
+    return result["data"]
+
+
+# ── Client CRUD ────────────────────────────────────────────────────────────────
+
+@app.get("/api/clients")
+async def api_list_clients(request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Client).where(Client.is_archived == False).order_by(Client.sort_order, Client.name)
+    )
+    clients = result.scalars().all()
+    out = []
+    for c in clients:
+        ad_result = await db.execute(
+            select(ClientAdAccount).where(ClientAdAccount.client_id == c.id).order_by(ClientAdAccount.sort_order)
+        )
+        ad_accounts = ad_result.scalars().all()
+        out.append({
+            "id": c.id, "name": c.name, "industry": c.industry,
+            "website": c.website, "notes": c.notes, "color_tag": c.color_tag,
+            "is_archived": c.is_archived, "sort_order": c.sort_order,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "ad_accounts": [
+                {
+                    "id": a.id, "nickname": a.nickname,
+                    "meta_account_id": a.meta_account_id,
+                    "default_page_id": a.default_page_id,
+                    "default_page_name": a.default_page_name,
+                    "default_pixel_id": a.default_pixel_id,
+                    "default_pixel_name": a.default_pixel_name,
+                    "default_instagram_id": a.default_instagram_id,
+                    "default_instagram_username": a.default_instagram_username,
+                    "default_daily_budget": a.default_daily_budget,
+                    "default_countries": a.default_countries,
+                    "default_age_min": a.default_age_min,
+                    "default_age_max": a.default_age_max,
+                    "default_timezone": a.default_timezone,
+                    "default_objective": a.default_objective,
+                    "is_default": a.is_default,
+                }
+                for a in ad_accounts
+            ],
+        })
+    return out
+
+
+@app.post("/api/clients", status_code=201)
+async def api_create_client(body: CreateClientRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    client = Client(
+        name=sanitize_text(body.name, 200),
+        industry=body.industry,
+        website=body.website,
+        notes=sanitize_text(body.notes or "", 5000),
+        color_tag=body.color_tag,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(client)
+    await db.commit()
+    await db.refresh(client)
+    return {"id": client.id, "name": client.name}
+
+
+@app.put("/api/clients/{client_id}")
+async def api_update_client(client_id: int, body: UpdateClientRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Client).where(Client.id == client_id))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(404, "Client not found")
+    if body.name is not None:
+        client.name = sanitize_text(body.name, 200)
+    if body.industry is not None:
+        client.industry = body.industry
+    if body.website is not None:
+        client.website = body.website
+    if body.notes is not None:
+        client.notes = sanitize_text(body.notes, 5000)
+    if body.color_tag is not None:
+        client.color_tag = body.color_tag
+    if body.is_archived is not None:
+        client.is_archived = body.is_archived
+    if body.sort_order is not None:
+        client.sort_order = body.sort_order
+    client.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"success": True}
+
+
+@app.delete("/api/clients/{client_id}")
+async def api_delete_client(client_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Client).where(Client.id == client_id))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(404, "Client not found")
+    await db.execute(delete(ClientAdAccount).where(ClientAdAccount.client_id == client_id))
+    await db.execute(delete(Conversation).where(Conversation.client_id == client_id))
+    await db.delete(client)
+    await db.commit()
+    return {"success": True}
+
+
+@app.post("/api/clients/{client_id}/ad-accounts", status_code=201)
+async def api_add_ad_account(client_id: int, body: CreateAdAccountRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    acc = ClientAdAccount(
+        client_id=client_id,
+        nickname=sanitize_text(body.nickname, 200),
+        meta_account_id=body.meta_account_id,
+        default_page_id=body.default_page_id,
+        default_page_name=body.default_page_name,
+        default_pixel_id=body.default_pixel_id,
+        default_pixel_name=body.default_pixel_name,
+        default_instagram_id=body.default_instagram_id,
+        default_instagram_username=body.default_instagram_username,
+        default_daily_budget=body.default_daily_budget,
+        default_countries=body.default_countries,
+        default_age_min=body.default_age_min,
+        default_age_max=body.default_age_max,
+        default_timezone=body.default_timezone,
+        default_objective=body.default_objective,
+        is_default=body.is_default,
+        created_at=datetime.utcnow(),
+    )
+    db.add(acc)
+    await db.commit()
+    await db.refresh(acc)
+    return {"id": acc.id}
+
+
+@app.delete("/api/clients/{client_id}/ad-accounts/{account_id}")
+async def api_delete_ad_account(client_id: int, account_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await db.execute(
+        delete(ClientAdAccount).where(
+            ClientAdAccount.id == account_id,
+            ClientAdAccount.client_id == client_id,
+        )
+    )
+    await db.commit()
+    return {"success": True}
+
+
+# ── Conversations ──────────────────────────────────────────────────────────────
+
+@app.get("/api/conversations")
+async def api_list_conversations(request: Request, client_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    query = select(Conversation).where(Conversation.is_archived == False)
+    if client_id:
+        query = query.where(Conversation.client_id == client_id)
+    query = query.order_by(Conversation.is_pinned.desc(), Conversation.updated_at.desc())
+    result = await db.execute(query)
+    convs = result.scalars().all()
+    return [
+        {
+            "id": c.id, "title": c.title, "client_id": c.client_id,
+            "client_ad_account_id": c.client_ad_account_id,
+            "is_pinned": c.is_pinned, "is_archived": c.is_archived,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        }
+        for c in convs
+    ]
+
+
+@app.post("/api/conversations", status_code=201)
+async def api_create_conversation(body: CreateConversationRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    conv = Conversation(
+        client_id=body.client_id,
+        client_ad_account_id=body.client_ad_account_id,
+        title=sanitize_text(body.title, 500),
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(conv)
+    await db.flush()
+    ctx = ActiveContext(
+        conversation_id=conv.id,
+        updated_at=datetime.utcnow(),
+    )
+    db.add(ctx)
+    await db.commit()
+    await db.refresh(conv)
+    return {"id": conv.id, "title": conv.title}
+
+
+@app.get("/api/conversations/{conv_id}")
+async def api_get_conversation(conv_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Conversation).where(Conversation.id == conv_id))
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    msg_result = await db.execute(
+        select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at).limit(100)
+    )
+    messages = msg_result.scalars().all()
+    return {
+        "id": conv.id, "title": conv.title, "client_id": conv.client_id,
+        "is_pinned": conv.is_pinned,
+        "messages": [
+            {
+                "id": m.id, "role": m.role, "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in messages
+        ],
+    }
+
+
+@app.put("/api/conversations/{conv_id}")
+async def api_update_conversation(conv_id: int, body: UpdateConversationRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Conversation).where(Conversation.id == conv_id))
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    if body.title is not None:
+        conv.title = sanitize_text(body.title, 500)
+    if body.is_pinned is not None:
+        conv.is_pinned = body.is_pinned
+    if body.is_archived is not None:
+        conv.is_archived = body.is_archived
+    conv.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"success": True}
+
+
+@app.delete("/api/conversations/{conv_id}")
+async def api_delete_conversation(conv_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(Message).where(Message.conversation_id == conv_id))
+    await db.execute(delete(ActiveContext).where(ActiveContext.conversation_id == conv_id))
+    await db.execute(delete(Conversation).where(Conversation.id == conv_id))
+    await db.commit()
+    return {"success": True}
+
+
+@app.get("/api/conversations/{conv_id}/context")
+async def api_get_context(conv_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ActiveContext).where(ActiveContext.conversation_id == conv_id))
+    ctx = result.scalar_one_or_none()
+    if not ctx:
+        return {}
+    return {
+        "selected_meta_account_id": ctx.selected_meta_account_id,
+        "selected_ad_account_id": ctx.selected_ad_account_id,
+        "selected_page_id": ctx.selected_page_id,
+        "selected_pixel_id": ctx.selected_pixel_id,
+        "selected_instagram_id": ctx.selected_instagram_id,
+        "selected_timezone": ctx.selected_timezone,
+        "overrides": ctx.overrides,
+    }
+
+
+@app.put("/api/conversations/{conv_id}/context")
+async def api_update_context(conv_id: int, body: UpdateContextRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ActiveContext).where(ActiveContext.conversation_id == conv_id))
+    ctx = result.scalar_one_or_none()
+    if not ctx:
+        ctx = ActiveContext(conversation_id=conv_id, updated_at=datetime.utcnow())
+        db.add(ctx)
+    if body.selected_meta_account_id is not None:
+        ctx.selected_meta_account_id = body.selected_meta_account_id
+    if body.selected_ad_account_id is not None:
+        ctx.selected_ad_account_id = body.selected_ad_account_id
+    if body.selected_page_id is not None:
+        ctx.selected_page_id = body.selected_page_id
+    if body.selected_pixel_id is not None:
+        ctx.selected_pixel_id = body.selected_pixel_id
+    if body.selected_instagram_id is not None:
+        ctx.selected_instagram_id = body.selected_instagram_id
+    if body.selected_timezone is not None:
+        ctx.selected_timezone = body.selected_timezone
+    if body.overrides is not None:
+        ctx.overrides = body.overrides
+    ctx.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"success": True}
+
+
+# ── Chat (SSE streaming) ───────────────────────────────────────────────────────
+
+@app.post("/api/chat/{conv_id}")
+@limiter.limit("60/minute")
+async def api_chat(conv_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    body = await request.json()
+    message = sanitize_text(body.get("message", ""), 50000)
+    if not message:
+        raise HTTPException(400, "Message is required")
+
+    session = get_session(request)
+
+    async def event_stream():
+        async for chunk in agent.stream_response(conv_id, message, session, db):
+            yield chunk
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── File uploads ───────────────────────────────────────────────────────────────
+
+_session_uploads: dict[str, list[dict]] = {}
+
+@app.post("/api/upload")
+@limiter.limit("30/minute")
+async def api_upload(request: Request, file: UploadFile = File(...)):
+    session = get_session(request)
+    session_key = session.get("meta_user_id", "anon")
+
+    if not validate_file_extension(file.filename or ""):
+        raise HTTPException(400, "File type not allowed")
+
+    file_bytes = await file.read()
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(file_bytes) > max_bytes:
+        raise HTTPException(400, f"File too large (max {settings.MAX_UPLOAD_SIZE_MB}MB)")
+
+    if not validate_mime_type(file_bytes, file.filename or ""):
+        raise HTTPException(400, "File MIME type does not match extension")
+
+    result = await process_uploaded_file(file_bytes, file.filename or "upload")
+    if not result.get("success"):
+        raise HTTPException(500, result.get("error", "Upload failed"))
+
+    upload_info = {
+        "file_id": result["stored_path"].split("/")[-1],
+        "name": result["original_name"],
+        "type": result["file_type"],
+        "path": result["stored_path"],
+        "sha256": result["sha256"],
+    }
+    _session_uploads.setdefault(session_key, []).append(upload_info)
+    return upload_info
+
+
+@app.get("/api/uploads")
+async def api_list_uploads(request: Request):
+    session = get_session(request)
+    session_key = session.get("meta_user_id", "anon")
+    return _session_uploads.get(session_key, [])
+
+
+@app.delete("/api/uploads/{file_id}")
+async def api_delete_upload(file_id: str, request: Request):
+    session = get_session(request)
+    session_key = session.get("meta_user_id", "anon")
+    uploads = _session_uploads.get(session_key, [])
+    path = None
+    for u in uploads:
+        if u["file_id"] == file_id:
+            path = u["path"]
+            break
+    if path:
+        import os
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        _session_uploads[session_key] = [u for u in uploads if u["file_id"] != file_id]
+    return {"success": True}
+
+
+# ── Skills ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/skills")
+async def api_list_skills(request: Request, client_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    skills = await get_all_skills(db, client_id)
+    return skills
+
+
+@app.post("/api/skills", status_code=201)
+async def api_create_skill(body: CreateSkillRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await create_skill(
+        sanitize_text(body.name, 200),
+        body.description,
+        body.content,
+        body.client_id,
+        db,
+    )
+    if not result.get("success"):
+        raise HTTPException(500, result.get("error", "Failed to create skill"))
+    return result
+
+
+@app.put("/api/skills/{skill_id}")
+async def api_update_skill(skill_id: int, body: UpdateSkillRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await update_skill(skill_id, body.content, db)
+    if not result.get("success"):
+        raise HTTPException(500, result.get("error", "Failed to update skill"))
+    return result
+
+
+@app.patch("/api/skills/{skill_id}/toggle")
+async def api_toggle_skill(skill_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    body = await request.json()
+    is_active = body.get("is_active", True)
+    result = await toggle_skill(skill_id, is_active, db)
+    return result
+
+
+@app.delete("/api/skills/{skill_id}")
+async def api_delete_skill(skill_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await delete_skill(skill_id, db)
+    return result
+
+
+# ── Quick Commands ─────────────────────────────────────────────────────────────
+
+@app.get("/api/quick-commands")
+async def api_list_commands(request: Request, client_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    commands = await get_quick_commands(client_id, db)
+    return commands
+
+
+@app.post("/api/quick-commands", status_code=201)
+async def api_create_command(body: CreateQuickCommandRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await create_quick_command(
+        body.trigger, body.name, body.description,
+        body.prompt_template, body.client_id, db,
+    )
+    return result
+
+
+@app.delete("/api/quick-commands/{cmd_id}")
+async def api_delete_command(cmd_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(QuickCommand).where(QuickCommand.id == cmd_id))
+    cmd = result.scalar_one_or_none()
+    if cmd:
+        await db.delete(cmd)
+        await db.commit()
+    return {"success": True}
+
+
+@app.get("/api/quick-commands/export")
+async def api_export_commands(request: Request, db: AsyncSession = Depends(get_db)):
+    commands = await get_quick_commands(None, db)
+    return JSONResponse(content=commands, headers={"Content-Disposition": "attachment; filename=quick-commands.json"})
+
+
+@app.post("/api/quick-commands/import")
+async def api_import_commands(request: Request, db: AsyncSession = Depends(get_db)):
+    body = await request.json()
+    if not isinstance(body, list):
+        raise HTTPException(400, "Expected a JSON array")
+    imported = 0
+    for cmd in body:
+        try:
+            await create_quick_command(
+                cmd["trigger"], cmd["name"], cmd.get("description"),
+                cmd["prompt_template"], cmd.get("client_id"), db,
+            )
+            imported += 1
+        except Exception:
+            pass
+    return {"imported": imported}
+
+
+# ── Campaigns (proxy) ──────────────────────────────────────────────────────────
+
+@app.get("/api/campaigns/{ad_account_id}")
+async def api_get_campaigns(ad_account_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.get_campaigns(token, ad_account_id)
+    if not result.get("success"):
+        raise HTTPException(502, result.get("error", "Meta API error"))
+    return result["data"]
+
+
+@app.post("/api/campaigns")
+async def api_create_campaign(body: CreateCampaignRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.create_campaign(
+        token, body.ad_account_id, body.name, body.objective, body.status
+    )
+    if not result.get("success"):
+        raise HTTPException(502, result.get("error", "Meta API error"))
+    return result["data"]
+
+
+@app.patch("/api/campaigns/{campaign_id}/pause")
+async def api_pause_campaign(campaign_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.pause_campaign(token, campaign_id)
+    return result
+
+
+@app.patch("/api/campaigns/{campaign_id}/activate")
+async def api_activate_campaign(campaign_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.activate_campaign(token, campaign_id)
+    return result
+
+
+@app.delete("/api/campaigns/{campaign_id}")
+async def api_delete_campaign(campaign_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    token = await get_meta_token(request, db)
+    result = await meta_api.delete_campaign(token, campaign_id)
+    return result
+
+
+# ── Scheduled posts ────────────────────────────────────────────────────────────
+
+@app.get("/api/scheduled-posts")
+async def api_scheduled_posts(request: Request, client_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    query = select(ScheduledPost).where(ScheduledPost.status == "pending")
+    if client_id:
+        query = query.where(ScheduledPost.client_id == client_id)
+    query = query.order_by(ScheduledPost.scheduled_time)
+    result = await db.execute(query)
+    posts = result.scalars().all()
+    return [
+        {
+            "id": p.id, "platform": p.platform, "page_id": p.page_id,
+            "caption": p.caption, "media_type": p.media_type,
+            "scheduled_time": p.scheduled_time.isoformat() if p.scheduled_time else None,
+            "timezone": p.timezone, "status": p.status,
+        }
+        for p in posts
+    ]
+
+
+@app.delete("/api/scheduled-posts/{post_id}")
+async def api_cancel_scheduled_post(post_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ScheduledPost).where(ScheduledPost.id == post_id))
+    post = result.scalar_one_or_none()
+    if not post:
+        raise HTTPException(404, "Scheduled post not found")
+    if post.meta_post_id:
+        token = await get_meta_token(request, db)
+        await meta_api.delete_scheduled_post(token, post.meta_post_id)
+    post.status = "cancelled"
+    await db.commit()
+    return {"success": True}
+
+
+# ── API usage stats ────────────────────────────────────────────────────────────
+
+@app.get("/api/api-usage")
+async def api_usage(request: Request, db: AsyncSession = Depends(get_db)):
+    session = get_session(request)
+    uid = session.get("meta_user_id", "")
+    count = api_tracker.get_call_count(uid)
+    remaining = max(0, 200 - count)
+    paused = api_tracker.is_account_paused(uid)
+    return {
+        "calls_used": count,
+        "calls_limit": 200,
+        "calls_remaining": remaining,
+        "is_paused": paused,
+    }
