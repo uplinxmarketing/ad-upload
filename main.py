@@ -59,9 +59,10 @@ _bg_tasks: list[asyncio.Task] = []
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    async with get_db() as db:  # type: ignore[attr-defined]
+    async for db in get_db():
         await initialize_default_skills(db)
         await initialize_default_quick_commands(db)
+        break
     _bg_tasks.append(asyncio.create_task(_cleanup_uploads_loop()))
     _bg_tasks.append(asyncio.create_task(_token_refresh_loop()))
     logger.info("Uplinx Meta Manager started")
