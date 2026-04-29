@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
 
     AI_PROVIDER: str = "claude"
-    """Active AI provider: 'claude', 'openai', or 'grok'."""
+    """Active AI provider: 'claude', 'openai', or 'groq'."""
 
     OPENAI_API_KEY: str = ""
     """OpenAI API key (used when AI_PROVIDER=openai)."""
@@ -77,11 +77,11 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o"
     """OpenAI model name, e.g. gpt-4o, gpt-4-turbo."""
 
-    GROK_API_KEY: str = ""
-    """xAI Grok API key (used when AI_PROVIDER=grok)."""
+    GROQ_API_KEY: str = ""
+    """Groq API key (used when AI_PROVIDER=groq)."""
 
-    GROK_MODEL: str = "grok-3"
-    """Grok model name, e.g. grok-3."""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    """Groq model name, e.g. llama-3.3-70b-versatile."""
 
     # ------------------------------------------------------------------
     # Security

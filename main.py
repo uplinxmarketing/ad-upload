@@ -296,7 +296,7 @@ def _is_setup_complete() -> bool:
     has_ai = bool(
         settings.ANTHROPIC_API_KEY
         or settings.OPENAI_API_KEY
-        or settings.GROK_API_KEY
+        or settings.GROQ_API_KEY
     )
     return has_meta and has_ai
 
@@ -307,8 +307,8 @@ class SetupSaveRequest(BaseModel):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
-    grok_api_key: str = ""
-    grok_model: str = "grok-3"
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
     google_client_id: str = ""
     google_client_secret: str = ""
 
@@ -343,8 +343,8 @@ async def setup_save(req: SetupSaveRequest):
         "ANTHROPIC_API_KEY": req.anthropic_api_key,
         "OPENAI_API_KEY": req.openai_api_key,
         "OPENAI_MODEL": req.openai_model,
-        "GROK_API_KEY": req.grok_api_key,
-        "GROK_MODEL": req.grok_model,
+        "GROQ_API_KEY": req.groq_api_key,
+        "GROQ_MODEL": req.groq_model,
         "GOOGLE_CLIENT_ID": req.google_client_id,
         "GOOGLE_CLIENT_SECRET": req.google_client_secret,
     }
@@ -377,7 +377,7 @@ async def setup_status():
         "has_meta": bool(settings.META_APP_ID),
         "has_anthropic": bool(settings.ANTHROPIC_API_KEY),
         "has_openai": bool(settings.OPENAI_API_KEY),
-        "has_grok": bool(settings.GROK_API_KEY),
+        "has_groq": bool(settings.GROQ_API_KEY),
         "has_google": bool(settings.GOOGLE_CLIENT_ID),
     }
 
@@ -1252,11 +1252,11 @@ async def api_usage(request: Request, db: AsyncSession = Depends(get_db)):
 # ── AI provider switcher ───────────────────────────────────────────────────────
 
 class SwitchProviderRequest(BaseModel):
-    provider: str  # "claude", "openai", or "grok"
+    provider: str  # "claude", "openai", or "groq"
 
 @app.post("/api/ai-provider/switch")
 async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
-    valid = {"claude", "openai", "grok"}
+    valid = {"claude", "openai", "groq"}
     if req.provider not in valid:
         raise HTTPException(400, f"provider must be one of {valid}")
 
@@ -1287,6 +1287,6 @@ async def current_ai_provider(request: Request):
         "available": {
             "claude": bool(settings.ANTHROPIC_API_KEY),
             "openai": bool(settings.OPENAI_API_KEY),
-            "grok": bool(settings.GROK_API_KEY),
+            "groq": bool(settings.GROQ_API_KEY),
         },
     }

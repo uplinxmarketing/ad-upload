@@ -255,7 +255,7 @@
       <div class="provider-tabs">
         <div class="provider-tab active" onclick="selectProvider('claude')">Claude</div>
         <div class="provider-tab" onclick="selectProvider('openai')">ChatGPT</div>
-        <div class="provider-tab" onclick="selectProvider('grok')">Grok</div>
+        <div class="provider-tab" onclick="selectProvider('groq')">Groq</div>
       </div>
 
       <input type="hidden" id="ai_provider" value="claude">
@@ -287,19 +287,20 @@
         </div>
       </div>
 
-      <!-- Grok fields -->
-      <div class="provider-fields" id="fields-grok">
+      <!-- Groq fields -->
+      <div class="provider-fields" id="fields-groq">
         <div class="field">
-          <label>xAI Grok API Key</label>
-          <input type="password" id="grok_api_key" placeholder="xai-..." autocomplete="off">
-          <p class="hint">Get your key at <a href="#" onclick="return false">console.x.ai</a> → API Keys</p>
+          <label>Groq API Key</label>
+          <input type="password" id="groq_api_key" placeholder="gsk_..." autocomplete="off">
+          <p class="hint">Get your key at <a href="#" onclick="return false">console.groq.com</a> → API Keys</p>
         </div>
         <div class="field">
           <label>Model <span class="optional-badge">optional</span></label>
-          <select id="grok_model">
-            <option value="grok-3">grok-3 (recommended)</option>
-            <option value="grok-3-mini">grok-3-mini (faster)</option>
-            <option value="grok-2">grok-2</option>
+          <select id="groq_model">
+            <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (recommended)</option>
+            <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (fastest)</option>
+            <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+            <option value="gemma2-9b-it">gemma2-9b-it</option>
           </select>
         </div>
       </div>
@@ -353,7 +354,7 @@
   function selectProvider(p) {
     document.getElementById('ai_provider').value = p;
     document.querySelectorAll('.provider-tab').forEach((tab, i) => {
-      const providers = ['claude', 'openai', 'grok'];
+      const providers = ['claude', 'openai', 'groq'];
       tab.classList.toggle('active', providers[i] === p);
     });
     document.querySelectorAll('.provider-fields').forEach(f => f.classList.remove('active'));
@@ -373,8 +374,8 @@
       anthropic_api_key: document.getElementById('anthropic_api_key').value.trim(),
       openai_api_key: document.getElementById('openai_api_key').value.trim(),
       openai_model: document.getElementById('openai_model').value,
-      grok_api_key: document.getElementById('grok_api_key').value.trim(),
-      grok_model: document.getElementById('grok_model').value,
+      groq_api_key: document.getElementById('groq_api_key').value.trim(),
+      groq_model: document.getElementById('groq_model').value,
       meta_app_id: document.getElementById('meta_app_id').value.trim(),
       meta_app_secret: document.getElementById('meta_app_secret').value.trim(),
       google_client_id: document.getElementById('google_client_id').value.trim(),

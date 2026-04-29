@@ -47,7 +47,7 @@ _TOOL_TIMEOUT_SECONDS = 30
 
 
 class ClaudeAgent:
-    """Streaming AI agent supporting Claude, OpenAI, and Grok providers."""
+    """Streaming AI agent supporting Claude, OpenAI, and Groq providers."""
 
     def __init__(self) -> None:
         from config import settings
@@ -66,14 +66,14 @@ class ClaudeAgent:
             self._provider = "openai"
             self._openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             self.model = settings.OPENAI_MODEL or "gpt-4o"
-        elif provider == "grok":
+        elif provider == "groq":
             from openai import AsyncOpenAI
-            self._provider = "grok"
+            self._provider = "groq"
             self._openai_client = AsyncOpenAI(
-                api_key=settings.GROK_API_KEY,
-                base_url="https://api.x.ai/v1",
+                api_key=settings.GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1",
             )
-            self.model = settings.GROK_MODEL or "grok-3"
+            self.model = settings.GROQ_MODEL or "llama-3.3-70b-versatile"
         else:
             self._provider = "claude"
             self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -299,7 +299,7 @@ class ClaudeAgent:
         total_tokens = 0
         all_tool_calls: list[dict] = []
 
-        # Convert Claude tool definitions → OpenAI function format (used for openai/grok)
+        # Convert Claude tool definitions → OpenAI function format (used for openai/groq)
         def _to_openai_tools(defs: list[dict]) -> list[dict]:
             result = []
             for d in defs:
@@ -381,7 +381,7 @@ class ClaudeAgent:
                         )
 
                 else:
-                    # ── OpenAI / Grok streaming ───────────────────────────────
+                    # ── OpenAI / Groq streaming ──────────────────────────────
                     # Build OpenAI-format messages (system first, then history)
                     oai_messages: list[dict] = [{"role": "system", "content": system_prompt}]
                     for m in messages:
