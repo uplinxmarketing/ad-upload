@@ -1,5 +1,6 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
 REM ── Check venv exists ────────────────────────────────────────────────────
 if not exist venv\Scripts\pythonw.exe (

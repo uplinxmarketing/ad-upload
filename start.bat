@@ -3,6 +3,9 @@ setlocal enabledelayedexpansion
 title Uplinx Meta Manager
 color 0A
 
+REM Always run from the app folder
+cd /d "%~dp0"
+
 echo.
 echo  ============================================
 echo   UPLINX META MANAGER

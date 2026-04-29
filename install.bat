@@ -3,16 +3,36 @@ setlocal enabledelayedexpansion
 title Uplinx Meta Manager - Installer
 color 0A
 
+REM ── Always run from the folder that contains install.bat ─────────────────────
+cd /d "%~dp0"
+
 echo.
 echo  ============================================
 echo   UPLINX META MANAGER - INSTALLER
 echo  ============================================
 echo.
 
-REM ── Python check ─────────────────────────────────────────────────────────────
+REM ── Find a working Python (avoid Windows Store stub) ─────────────────────────
 echo  Checking for Python...
-where python >nul 2>&1
-if errorlevel 1 (
+
+REM Prefer the 'py' launcher (bypasses Windows Store stub)
+set PYTHON=
+py --version >nul 2>&1
+if not errorlevel 1 (
+    set PYTHON=py
+) else (
+    REM Fall back to python, but skip the Windows Store stub at System32
+    for /f "tokens=*" %%F in ('where python 2^>nul') do (
+        if "!PYTHON!"=="" (
+            echo %%F | findstr /i "WindowsApps\WindowsStore\System32" >nul 2>&1
+            if errorlevel 1 (
+                set PYTHON=%%F
+            )
+        )
+    )
+)
+
+if "!PYTHON!"=="" (
     echo.
     echo  ERROR: Python is not installed or not in PATH.
     echo.
@@ -27,8 +47,8 @@ if errorlevel 1 (
     goto :error
 )
 
-for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYVER=%%i
-echo  Found: %PYVER%
+for /f "tokens=*" %%i in ('!PYTHON! --version 2^>^&1') do set PYVER=%%i
+echo  Found: %PYVER%  (using: !PYTHON!)
 echo.
 
 REM ── Clean up old venv ─────────────────────────────────────────────────────────
@@ -42,26 +62,25 @@ if exist venv (
 REM ── Create virtual environment ────────────────────────────────────────────────
 echo  [1/5] Creating virtual environment...
 
-python -m venv venv 2>&1
-if exist venv\Scripts\python.exe goto :venv_ok
+REM Use full absolute path for the venv to avoid Store-stub working-dir bugs
+!PYTHON! -m venv "%~dp0venv" 2>&1
+if exist "%~dp0venv\Scripts\python.exe" goto :venv_ok
 
-REM venv failed — try with --without-pip fallback
-echo  First attempt failed, trying alternate method...
-python -m venv venv --without-pip 2>&1
-if exist venv\Scripts\python.exe goto :venv_ok
+REM Retry with --without-pip
+echo  First attempt failed, trying without pip...
+!PYTHON! -m venv "%~dp0venv" --without-pip 2>&1
+if exist "%~dp0venv\Scripts\python.exe" goto :venv_ok
 
 echo.
 echo  ERROR: Could not create a virtual environment.
 echo.
-echo  Common causes:
-echo    1. Python installation is incomplete or corrupted
-echo       Solution: Reinstall Python from python.org (tick "Add to PATH")
+echo  Most common fix:
+echo    Move this folder out of Downloads to your Desktop,
+echo    then run install.bat again.
 echo.
-echo    2. This folder is on a network drive or has permission issues
-echo       Solution: Move the folder to your Desktop or Documents
-echo.
-echo    3. Antivirus is blocking venv creation
-echo       Solution: Temporarily disable antivirus, then reinstall
+echo  Other causes:
+echo    - Antivirus blocking venv creation (temporarily disable it)
+echo    - Corrupted Python (reinstall from python.org)
 echo.
 goto :error
 
@@ -73,26 +92,22 @@ echo  [2/5] Installing packages (may take 3-5 minutes)...
 echo         Please wait, do not close this window.
 echo.
 
-REM If venv was created without pip, bootstrap it first
-if not exist venv\Scripts\pip.exe (
+if not exist "%~dp0venv\Scripts\pip.exe" (
     echo  Bootstrapping pip...
-    venv\Scripts\python -m ensurepip --upgrade
+    "%~dp0venv\Scripts\python.exe" -m ensurepip --upgrade
 )
 
-venv\Scripts\pip install -r requirements.txt --no-warn-script-location
+"%~dp0venv\Scripts\pip.exe" install -r "%~dp0requirements.txt" --no-warn-script-location
 echo.
 echo  [2/5] Packages installed.
 
 REM ── Create .env file ──────────────────────────────────────────────────────────
 echo  [3/5] Setting up configuration file...
-if not exist .env (
-    copy .env.example .env >nul 2>&1
+if not exist "%~dp0.env" (
+    copy "%~dp0.env.example" "%~dp0.env" >nul 2>&1
 
-    REM Generate SECRET_KEY
-    venv\Scripts\python -c "import secrets; f=open('.env','r'); t=f.read(); f.close(); t=t.replace('generate_64_char_random_string_here', secrets.token_hex(32)); f=open('.env','w'); f.write(t); f.close()"
-
-    REM Generate ENCRYPTION_KEY
-    venv\Scripts\python -c "from cryptography.fernet import Fernet; f=open('.env','r'); t=f.read(); f.close(); t=t.replace('generate_fernet_key_here', Fernet.generate_key().decode()); f=open('.env','w'); f.write(t); f.close()"
+    "%~dp0venv\Scripts\python.exe" -c "import secrets; f=open('.env','r'); t=f.read(); f.close(); t=t.replace('generate_64_char_random_string_here', secrets.token_hex(32)); f=open('.env','w'); f.write(t); f.close()"
+    "%~dp0venv\Scripts\python.exe" -c "from cryptography.fernet import Fernet; f=open('.env','r'); t=f.read(); f.close(); t=t.replace('generate_fernet_key_here', Fernet.generate_key().decode()); f=open('.env','w'); f.write(t); f.close()"
 
     echo         .env created with auto-generated security keys.
 ) else (
@@ -115,19 +130,16 @@ echo  ============================================
 echo   INSTALLATION COMPLETE!
 echo  ============================================
 echo.
-echo   Next steps:
-echo.
 echo   Double-click one of these to launch:
 echo.
-echo     start_tray.bat  — runs silently in the system tray
+echo     start_tray.bat  - runs silently in the system tray
 echo                       (no terminal window, recommended)
 echo.
-echo     start.bat       — runs with a terminal window
-echo                       (use this to see logs / errors)
+echo     start.bat       - runs with a terminal window
+echo                       (use if you see errors)
 echo.
-echo   The app opens automatically in your browser.
-echo   A setup wizard will guide you through entering
-echo   your API keys.
+echo   The app will open in your browser automatically.
+echo   A setup wizard lets you enter your API keys.
 echo.
 echo  ============================================
 echo.
