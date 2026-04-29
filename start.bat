@@ -41,7 +41,7 @@ REM Open browser after 3 seconds in background
 start "" /b cmd /c "timeout /t 3 /nobreak >nul 2>&1 && start http://localhost:8000"
 
 REM Start the server using venv python directly
-venv\Scripts\uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+venv\Scripts\uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 echo.
 echo  Server stopped.

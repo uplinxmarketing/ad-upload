@@ -103,8 +103,13 @@ class Settings(BaseSettings):
     # Server / CORS
     # ------------------------------------------------------------------
 
-    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1"]
-    """Hosts allowed to access the API (used for CORS / trusted-host middleware)."""
+    ALLOWED_HOSTS: str = "localhost,127.0.0.1"
+    """Comma-separated hosts allowed to access the API."""
+
+    @property
+    def allowed_hosts_list(self) -> List[str]:
+        """Return ALLOWED_HOSTS as a list, supporting comma-separated values."""
+        return [h.strip() for h in self.ALLOWED_HOSTS.split(",") if h.strip()]
 
     # ------------------------------------------------------------------
     # File handling
