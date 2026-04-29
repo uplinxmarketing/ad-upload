@@ -117,13 +117,17 @@ echo  ============================================
 echo.
 echo   Next steps:
 echo.
-echo   1. Double-click  start.bat  to launch the app
+echo   Double-click one of these to launch:
 echo.
-echo   2. The app will open in your browser at:
-echo        http://localhost:8000
+echo     start_tray.bat  — runs silently in the system tray
+echo                       (no terminal window, recommended)
 echo.
-echo   3. A setup wizard will guide you through
-echo      entering your API keys in the browser.
+echo     start.bat       — runs with a terminal window
+echo                       (use this to see logs / errors)
+echo.
+echo   The app opens automatically in your browser.
+echo   A setup wizard will guide you through entering
+echo   your API keys.
 echo.
 echo  ============================================
 echo.
