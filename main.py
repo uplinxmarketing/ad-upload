@@ -787,7 +787,9 @@ async def api_pages(request: Request, db: AsyncSession = Depends(get_db)):
 @app.get("/api/meta/pixels/{ad_account_id}")
 async def api_pixels(ad_account_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     token = await get_meta_token(request, db)
-    result = await meta_api.get_pixels(token, ad_account_id)
+    # meta_api.get_pixels prepends act_ itself, so strip it if already present
+    clean_id = ad_account_id[4:] if ad_account_id.startswith("act_") else ad_account_id
+    result = await meta_api.get_pixels(token, clean_id)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
     return result["data"]
