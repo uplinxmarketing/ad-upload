@@ -60,7 +60,7 @@ python -m venv venv
 if not exist venv\Scripts\python.exe (
     echo.
     echo  ERROR: Virtual environment creation failed.
-    echo  Try: python -m pip install --upgrade pip
+    echo  Try running install.bat as Administrator (right-click ^> Run as administrator)
     echo.
     goto :error
 )
@@ -70,7 +70,6 @@ REM ── Install dependencies ────────────────
 echo  [2/5] Installing packages (may take 3-5 minutes)...
 echo         Please wait, do not close this window.
 echo.
-venv\Scripts\pip install --upgrade pip --quiet
 venv\Scripts\pip install -r requirements.txt --no-warn-script-location
 echo.
 echo  [2/5] Packages installed.
