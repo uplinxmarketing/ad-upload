@@ -1,36 +1,41 @@
 @echo off
+setlocal enabledelayedexpansion
 title Uplinx Meta Manager
-echo ============================================
-echo  Uplinx Meta Manager
-echo ============================================
+color 0A
+
 echo.
+echo  ============================================
+echo   UPLINX META MANAGER
+echo  ============================================
+echo.
+
+REM ── Check venv exists ────────────────────────────────────────────────────
+if not exist venv\Scripts\python.exe (
+    echo  ERROR: App is not installed yet.
+    echo.
+    echo  Please run install.bat first.
+    echo.
+    pause
+    exit /b 1
+)
 
 REM ── Check .env exists ────────────────────────────────────────────────────
 if not exist .env (
-    echo ERROR: .env file not found.
+    echo  ERROR: .env file not found.
     echo.
-    echo Please run install.bat first, then fill in your API keys.
-    echo.
-    pause
-    exit /b 1
-)
-
-REM ── Check venv exists ─────────────────────────────────────────────────────
-if not exist venv\Scripts\activate.bat (
-    echo ERROR: Virtual environment not found.
-    echo.
-    echo Please run install.bat first.
+    echo  Please run install.bat first, then fill in your API keys.
     echo.
     pause
     exit /b 1
 )
 
-REM ── Warn if keys are still placeholders ──────────────────────────────────
+REM ── Check API keys are filled in ─────────────────────────────────────────
 findstr /c:"META_APP_ID=your_meta_app_id" .env >nul 2>&1
 if not errorlevel 1 (
-    echo WARNING: META_APP_ID is not set in .env
+    echo  WARNING: META_APP_ID is not set.
     echo.
-    echo Please open the .env file and fill in your credentials before starting.
+    echo  Open .env in Notepad and fill in your Meta App credentials.
+    echo  See README.md for instructions on getting your credentials.
     echo.
     pause
     exit /b 1
@@ -38,32 +43,28 @@ if not errorlevel 1 (
 
 findstr /c:"ANTHROPIC_API_KEY=your_anthropic_api_key" .env >nul 2>&1
 if not errorlevel 1 (
-    echo WARNING: ANTHROPIC_API_KEY is not set in .env
+    echo  WARNING: ANTHROPIC_API_KEY is not set.
     echo.
-    echo Please open the .env file and fill in your Anthropic API key.
+    echo  Open .env in Notepad and add your Anthropic API key.
+    echo  Get one at: https://console.anthropic.com/
     echo.
     pause
     exit /b 1
 )
 
-REM ── Activate venv ────────────────────────────────────────────────────────
-call venv\Scripts\activate.bat
-
-REM ── Open browser after 2 seconds ─────────────────────────────────────────
-echo Starting server at http://localhost:8000
-echo Press Ctrl+C to stop the server.
+REM ── Launch ───────────────────────────────────────────────────────────────
+echo  Starting server at http://localhost:8000
+echo  Press Ctrl+C to stop.
 echo.
-start "" /b cmd /c "timeout /t 2 /nobreak >nul && start http://localhost:8000"
 
-REM ── Start server ─────────────────────────────────────────────────────────
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-if errorlevel 1 (
-    echo.
-    echo ERROR: Server failed to start.
-    echo Check the error above for details.
-    echo Common fixes:
-    echo   - Port 8000 in use: change --port 8000 above to --port 8001
-    echo   - Missing package: run install.bat again
-    echo.
-    pause
-)
+REM Open browser after 3 seconds in background
+start "" /b cmd /c "timeout /t 3 /nobreak >nul 2>&1 && start http://localhost:8000"
+
+REM Start the server using venv python directly
+venv\Scripts\uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+
+echo.
+echo  Server stopped.
+echo.
+pause
+endlocal
