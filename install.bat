@@ -4,11 +4,19 @@ echo ============================================
 echo  Uplinx Meta Manager - Installer
 echo ============================================
 echo.
+echo All output is also saved to: install_log.txt
+echo.
+
+REM Start logging everything to a file
+set LOGFILE=install_log.txt
+echo Install started: %date% %time% > %LOGFILE%
 
 REM ── Check Python exists ──────────────────────────────────────────────────
+echo Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python was not found.
+    echo ERROR: Python not found >> %LOGFILE%
     echo.
     echo Please install Python 3.10 or newer from:
     echo   https://www.python.org/downloads/
@@ -19,18 +27,16 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-
-REM Print Python version for info
-echo Python found:
 python --version
+python --version >> %LOGFILE% 2>&1
 echo.
 
 REM ── Create virtual environment ───────────────────────────────────────────
 echo [1/7] Creating virtual environment...
-python -m venv venv
+python -m venv venv >> %LOGFILE% 2>&1
 if errorlevel 1 (
     echo ERROR: Failed to create virtual environment.
-    echo Try running: python -m pip install virtualenv
+    echo ERROR: venv creation failed >> %LOGFILE%
     echo.
     pause
     exit /b 1
@@ -42,6 +48,8 @@ echo [2/7] Activating virtual environment...
 call venv\Scripts\activate.bat
 if errorlevel 1 (
     echo ERROR: Could not activate virtual environment.
+    echo ERROR: venv activate failed >> %LOGFILE%
+    echo.
     pause
     exit /b 1
 )
@@ -49,25 +57,32 @@ echo       Done.
 
 REM ── Upgrade pip ──────────────────────────────────────────────────────────
 echo [3/7] Upgrading pip...
-python -m pip install --upgrade pip
-if errorlevel 1 (
-    echo WARNING: pip upgrade failed, continuing anyway...
-)
-echo.
+python -m pip install --upgrade pip >> %LOGFILE% 2>&1
+echo       Done.
 
 REM ── Install dependencies ─────────────────────────────────────────────────
 echo [4/7] Installing dependencies (this may take a few minutes)...
-pip install -r requirements.txt
+echo.
+pip install -r requirements.txt 2>&1
 if errorlevel 1 (
     echo.
-    echo ERROR: Dependency installation failed.
-    echo Check your internet connection and try again.
-    echo If the error mentions a specific package, note it down.
+    echo ============================================
+    echo  ERROR: Dependency installation failed.
+    echo ============================================
+    echo.
+    echo The full error has been saved to: install_log.txt
+    echo Open that file and look for the line starting with ERROR:
+    echo.
+    echo Common fixes:
+    echo  - Run this as Administrator (right-click install.bat)
+    echo  - Check your internet connection
+    echo  - If a specific package is mentioned, note its name
     echo.
     pause
     exit /b 1
 )
-echo       Done.
+echo.
+echo [4/7] Done.
 
 REM ── Set up .env ───────────────────────────────────────────────────────────
 echo [5/7] Setting up configuration...
@@ -75,7 +90,6 @@ if not exist .env (
     copy .env.example .env >nul
     echo       Created .env from template.
 
-    REM Generate keys using Python (after venv is active, cryptography is installed)
     python -c "import secrets, sys; sys.stdout.write(secrets.token_hex(32))" > _tmp_sk.txt 2>nul
     python -c "from cryptography.fernet import Fernet; import sys; sys.stdout.write(Fernet.generate_key().decode())" > _tmp_ek.txt 2>nul
 
@@ -87,7 +101,8 @@ txt = txt.replace('generate_64_char_random_string_here', sk)
 txt = txt.replace('generate_fernet_key_here', ek)
 open('.env', 'w').write(txt)
 print('      Security keys generated.')
-"
+" >> %LOGFILE% 2>&1
+    echo       Security keys generated.
     del _tmp_sk.txt _tmp_ek.txt >nul 2>&1
 ) else (
     echo       .env already exists, skipping.
@@ -102,11 +117,12 @@ echo       Done.
 
 REM ── Initialize database ───────────────────────────────────────────────────
 echo [7/7] Initializing database...
-python -c "import asyncio; from database import init_db; asyncio.run(init_db())"
+python -c "import asyncio; from database import init_db; asyncio.run(init_db())" >> %LOGFILE% 2>&1
 if errorlevel 1 (
-    echo WARNING: Database init had an issue. It will be retried on first launch.
+    echo       WARNING: DB init issue - will retry on first launch.
+) else (
+    echo       Done.
 )
-echo       Done.
 
 echo.
 echo ============================================
