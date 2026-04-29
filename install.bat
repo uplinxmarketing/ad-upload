@@ -70,25 +70,26 @@ echo       Done.
 REM ── Install dependencies ─────────────────────────────────────────────────
 echo [4/7] Installing dependencies (this may take a few minutes)...
 echo.
-pip install -r requirements.txt 2>&1
+pip install -r requirements.txt
+echo.
+
+REM Do not check errorlevel here - pip returns 1 on Windows even on success
+REM (pywin32 post-install scripts trigger this false positive)
+REM Instead verify by actually importing key packages:
+echo       Verifying installation...
+python -c "import fastapi, anthropic, sqlalchemy, cryptography, fastmcp" 2>&1
 if errorlevel 1 (
     echo.
     echo ============================================
-    echo  ERROR: Dependency installation failed.
+    echo  ERROR: Some packages failed to import.
     echo ============================================
     echo.
-    echo The full error has been saved to: install_log.txt
-    echo Open that file and look for the line starting with ERROR:
-    echo.
-    echo Common fixes:
-    echo  - Run this as Administrator (right-click install.bat)
-    echo  - Check your internet connection
-    echo  - If a specific package is mentioned, note its name
+    echo Try running install.bat as Administrator:
+    echo   Right-click install.bat ^> Run as administrator
     echo.
     pause
     exit /b 1
 )
-echo.
 echo [4/7] Done.
 
 REM ── Set up .env ───────────────────────────────────────────────────────────
