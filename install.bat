@@ -31,6 +31,13 @@ python --version
 python --version >> %LOGFILE% 2>&1
 echo.
 
+REM ── Remove old venv for a clean install ─────────────────────────────────
+if exist venv (
+    echo Removing old virtual environment for clean install...
+    rmdir /s /q venv
+    echo       Old venv removed.
+)
+
 REM ── Create virtual environment ───────────────────────────────────────────
 echo [1/7] Creating virtual environment...
 python -m venv venv >> %LOGFILE% 2>&1
