@@ -29,6 +29,12 @@ if not exist .env (
     exit /b 1
 )
 
+REM ── Ensure all packages are up to date ───────────────────────────────────
+echo  Checking packages...
+venv\Scripts\pip install -r requirements.txt -q --no-warn-script-location
+echo  OK
+echo.
+
 REM ── Launch ───────────────────────────────────────────────────────────────
 echo  Starting server at http://localhost:8000
 echo  Press Ctrl+C to stop.
