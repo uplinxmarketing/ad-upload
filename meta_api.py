@@ -177,13 +177,33 @@ async def get_pages(token: str) -> dict[str, Any]:
 
 
 async def get_instagram_accounts(token: str, page_id: str) -> dict[str, Any]:
-    """List Instagram accounts connected to a Facebook Page."""
-    url = f"{BASE_URL}/{page_id}/instagram_accounts"
-    return await _api_request(
+    """Return Instagram account(s) connected to a Facebook Page.
+
+    Tries the modern instagram_business_account field first (no extra permission
+    needed), then falls back to the legacy /instagram_accounts edge.
+    Always returns {"success": True, "data": {"data": [...]}} shape.
+    """
+    # Method 1 – instagram_business_account field (works for most tokens)
+    r1 = await _api_request(
         "GET",
-        url,
+        f"{BASE_URL}/{page_id}",
+        params={"fields": "instagram_business_account{id,username}", "access_token": token},
+    )
+    if r1.get("success"):
+        ig = r1["data"].get("instagram_business_account")
+        if ig and ig.get("id"):
+            return {"success": True, "data": {"data": [{"id": ig["id"], "username": ig.get("username", ig["id"])}]}}
+
+    # Method 2 – legacy edge (requires instagram_basic permission)
+    r2 = await _api_request(
+        "GET",
+        f"{BASE_URL}/{page_id}/instagram_accounts",
         params={"fields": "id,username", "access_token": token},
     )
+    if r2.get("success"):
+        return r2
+
+    return {"success": True, "data": {"data": []}}
 
 
 async def get_pixels(token: str, ad_account_id: str) -> dict[str, Any]:

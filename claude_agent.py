@@ -82,7 +82,7 @@ class ClaudeAgent:
         else:
             self._provider = "claude"
             self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-            self.model = "claude-opus-4-7"
+            self.model = settings.CLAUDE_MODEL or "claude-opus-4-7"
 
         self.max_tokens = 4096
 
