@@ -110,10 +110,11 @@ class ClaudeAgent:
 
         messages: list[dict] = []
         for row in rows:
-            msg: dict = {"role": row.role, "content": row.content}
-            # tool_calls is stored as JSON; restore it if present
-            if row.tool_calls:
-                msg["tool_calls"] = row.tool_calls
+            # Only include role + content. tool_calls from DB is metadata-only
+            # (stored without id/type/function structure and without the
+            # corresponding tool-result messages), so including it would
+            # cause a 400 from OpenAI/Groq on the next request.
+            msg: dict = {"role": row.role, "content": row.content or ""}
             messages.append(msg)
 
         return messages

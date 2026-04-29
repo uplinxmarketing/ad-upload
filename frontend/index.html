@@ -709,8 +709,11 @@ function appendMessage(role, content) {
   div.innerHTML = `<div class="msg-bubble">${rendered}</div>
     <div class="msg-meta">
       ${role==='user'?'You':'🔷 Uplinx'}
-      <span class="msg-copy" onclick="navigator.clipboard.writeText(${JSON.stringify(rawText)}).then(()=>toast('Copied!','success'))">Copy</span>
+      <span class="msg-copy">Copy</span>
     </div>`;
+  div.querySelector('.msg-copy').addEventListener('click', () => {
+    navigator.clipboard.writeText(rawText).then(() => toast('Copied!', 'success'));
+  });
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
@@ -1104,7 +1107,6 @@ async function createClient() {
 }
 
 // ── Modals ─────────────────────────────────────────────────────────────────
-function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if(e.target===m) m.classList.remove('open'); }));
 
@@ -1171,9 +1173,8 @@ async function updateStatusIndicators() {
 }
 
 // ── Modal open (load data per modal) ───────────────────────────────────────
-const _origOpenModal = openModal;
 function openModal(id) {
-  _origOpenModal(id);
+  document.getElementById(id).classList.add('open');
   if (id === 'settings-modal') loadProviderStatus();
   if (id === 'skills-modal') loadSkills();
   if (id === 'commands-modal') loadQuickCommands();
@@ -1217,7 +1218,7 @@ async function init() {
     const check = await fetch('/api/accounts/meta');
     if (check.status === 401) { showConnectScreen(); return; }
     showApp();
-    await Promise.all([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), updateStatusIndicators()]);
+    await Promise.all([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), updateStatusIndicators(), loadAccountDropdowns()]);
     // Refresh status every 30 seconds
     setInterval(updateStatusIndicators, 30000);
   } catch(e) { showConnectScreen(); }
