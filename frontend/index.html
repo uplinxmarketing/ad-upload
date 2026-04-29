@@ -6,6 +6,7 @@
 <title>Uplinx Meta Manager</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -690,17 +691,25 @@ async function openConversation(convId) {
   refreshApiUsage();
 }
 
+function renderMarkdown(text) {
+  if (typeof marked === 'undefined') {
+    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/```([\s\S]*?)```/g,'<pre><code>$1</code></pre>')
+      .replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\n/g,'<br>');
+  }
+  return marked.parse(text, { breaks: true, gfm: true });
+}
+
 function appendMessage(role, content) {
   const msgs = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-  const safe = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/```([\s\S]*?)```/g,'<pre><code>$1</code></pre>')
-    .replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\n/g,'<br>');
-  div.innerHTML = `<div class="msg-bubble">${safe}</div>
+  const rawText = content || '';
+  const rendered = role === 'assistant' ? renderMarkdown(rawText) : rawText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+  div.innerHTML = `<div class="msg-bubble">${rendered}</div>
     <div class="msg-meta">
       ${role==='user'?'You':'🔷 Uplinx'}
-      <span class="msg-copy" onclick="navigator.clipboard.writeText(${JSON.stringify(content)}).then(()=>toast('Copied!','success'))">Copy</span>
+      <span class="msg-copy" onclick="navigator.clipboard.writeText(${JSON.stringify(rawText)}).then(()=>toast('Copied!','success'))">Copy</span>
     </div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
@@ -727,6 +736,18 @@ async function sendMessage() {
   const sendBtn = document.getElementById('send-btn');
   sendBtn.disabled = true;
   const typing = addTypingIndicator();
+  let aiDiv = null;
+  let bubble = null;
+  let accumulatedText = '';
+  let renderTimer = null;
+
+  function flushRender() {
+    if (bubble && accumulatedText) {
+      bubble.innerHTML = renderMarkdown(accumulatedText);
+      bubble.closest('.messages').scrollTop = 99999;
+    }
+  }
+
   try {
     const resp = await fetch(`/api/chat/${state.activeConvId}`, {
       method: 'POST',
@@ -735,16 +756,39 @@ async function sendMessage() {
     });
     if (resp.status === 401) { showConnectScreen(); return; }
     typing.remove();
-    const aiDiv = appendMessage('assistant', '');
-    const bubble = aiDiv.querySelector('.msg-bubble');
-    bubble.innerHTML = '';
-    let textContent = '';
-    await handleStream(resp, bubble, (t) => { textContent += t; });
-    aiDiv.querySelector('.msg-meta .msg-copy').onclick = () =>
-      navigator.clipboard.writeText(textContent).then(()=>toast('Copied!','success'));
+
+    // Create the assistant bubble eagerly
+    aiDiv = document.createElement('div');
+    aiDiv.className = 'msg assistant';
+    aiDiv.innerHTML = `<div class="msg-bubble"></div>
+      <div class="msg-meta">🔷 Uplinx <span class="msg-copy">Copy</span></div>`;
+    document.getElementById('messages').appendChild(aiDiv);
+    bubble = aiDiv.querySelector('.msg-bubble');
+
+    await handleStream(resp, bubble, (chunk) => {
+      accumulatedText += chunk;
+      clearTimeout(renderTimer);
+      renderTimer = setTimeout(flushRender, 30);
+    });
+
+    // Final render with full markdown
+    clearTimeout(renderTimer);
+    if (accumulatedText) {
+      bubble.innerHTML = renderMarkdown(accumulatedText);
+    }
+    bubble.closest('.messages').scrollTop = 99999;
+
+    // Wire up copy button
+    const copyBtn = aiDiv.querySelector('.msg-copy');
+    if (copyBtn) {
+      copyBtn.onclick = () => navigator.clipboard.writeText(accumulatedText).then(()=>toast('Copied!','success'));
+    }
   } catch(e) {
     typing.remove();
-    appendMessage('assistant', '⚠️ Error: ' + e.message);
+    if (!accumulatedText) {
+      appendMessage('assistant', 'Sorry, something went wrong. Please try again.');
+    }
+    console.error('Chat error:', e);
   } finally {
     sendBtn.disabled = !state.activeConvId;
     refreshApiUsage();
@@ -755,6 +799,11 @@ async function handleStream(response, container, onText) {
   const reader = response.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
+  const msgs = document.getElementById('messages');
+
+  // Track active tool steps keyed by name
+  const toolSteps = {};
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -763,29 +812,35 @@ async function handleStream(response, container, onText) {
     buf = lines.pop();
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (raw === '[DONE]') continue;
       try {
-        const evt = JSON.parse(line.slice(6));
+        const evt = JSON.parse(raw);
         if (evt.type === 'text') {
-          const span = document.createElement('span');
-          span.textContent = evt.content;
-          container.appendChild(span);
-          onText(evt.content);
-          container.closest('.messages').scrollTop = 99999;
+          onText(evt.text || '');
+          msgs.scrollTop = 99999;
         } else if (evt.type === 'tool_start') {
-          const d = document.createElement('div');
-          d.className = 'tool-step'; d.id = `tool-${evt.name}`;
-          d.textContent = `Running ${evt.name}…`;
-          container.appendChild(d);
+          const stepEl = document.createElement('div');
+          stepEl.className = 'tool-step';
+          const toolLabel = (evt.name || 'tool').replace(/_/g, ' ');
+          stepEl.textContent = `${toolLabel}…`;
+          container.appendChild(stepEl);
+          toolSteps[evt.name] = stepEl;
+          msgs.scrollTop = 99999;
         } else if (evt.type === 'tool_result') {
-          const d = document.getElementById(`tool-${evt.name}`);
-          if (d) { d.classList.add('done'); d.textContent = `${evt.name} ✓`; }
+          const stepEl = toolSteps[evt.name];
+          if (stepEl) {
+            const toolLabel = (evt.name || 'tool').replace(/_/g, ' ');
+            stepEl.classList.add('done');
+            stepEl.textContent = `${toolLabel} ✓`;
+          }
         } else if (evt.type === 'error') {
-          const d = document.createElement('div');
-          d.style.cssText='color:var(--error);font-size:12px;padding:4px 0';
-          d.textContent = '⚠️ ' + (evt.message||'Error');
-          container.appendChild(d);
+          // Log to console only — don't pollute the chat UI with raw errors
+          console.error('Agent error:', evt.message || evt);
         }
-      } catch {}
+      } catch(e) {
+        // Ignore malformed SSE lines
+      }
     }
   }
 }
