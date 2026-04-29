@@ -557,8 +557,10 @@ async function connectWithToken() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ access_token: token }),
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || 'Connection failed');
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = {}; }
+    if (!r.ok) throw new Error(data.detail || r.statusText || 'Server error — check token and try again');
     showApp();
     await Promise.all([loadClients(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage()]);
     toast('Connected as ' + (data.user_name || data.user_id), 'success');
