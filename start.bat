@@ -35,19 +35,30 @@ venv\Scripts\pip install -r requirements.txt -q --no-warn-script-location
 echo  OK
 echo.
 
-REM ── Launch ───────────────────────────────────────────────────────────────
-echo  Starting server at http://localhost:8000
+REM ── Find a free port (8000 → 8010) ───────────────────────────────────────
+set PORT=8000
+for %%P in (8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010) do (
+    if "!PORT_FOUND!" == "" (
+        netstat -ano 2>nul | findstr /r "[ :]%%P " | findstr "LISTENING" >nul 2>&1
+        if errorlevel 1 (
+            set PORT=%%P
+            set PORT_FOUND=1
+        )
+    )
+)
+
+echo  Starting server at http://localhost:%PORT%
 echo  Press Ctrl+C to stop.
 echo.
-echo  The app will open in your browser automatically.
-echo  If it does not open, visit: http://localhost:8000
+echo  Opening browser in 5 seconds...
+echo  If it does not open, visit: http://localhost:%PORT%
 echo.
 
-REM Open browser after 3 seconds in background
-start "" /b cmd /c "timeout /t 3 /nobreak >nul 2>&1 && start http://localhost:8000"
+REM Open browser after 5 seconds (gives server time to fully start)
+start "" /b cmd /c "timeout /t 5 /nobreak >nul 2>&1 && start http://localhost:%PORT%"
 
-REM Start the server using venv python directly
-venv\Scripts\uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+REM Start the server
+venv\Scripts\uvicorn main:app --host 0.0.0.0 --port %PORT%
 
 echo.
 echo  Server stopped.
