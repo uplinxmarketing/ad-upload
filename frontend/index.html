@@ -376,7 +376,7 @@ a{color:inherit;text-decoration:none}
 
 <!-- New Client Modal -->
 <div class="modal-overlay" id="new-client-modal">
-  <div class="modal">
+  <div class="modal" style="width:540px">
     <div class="modal-header">
       <div class="modal-title">New Client</div>
       <button class="modal-close" onclick="closeModal('new-client-modal')">×</button>
@@ -386,27 +386,54 @@ a{color:inherit;text-decoration:none}
         <label>Client Name *</label>
         <input type="text" class="form-input" id="new-client-name" placeholder="e.g. Minci Delice">
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label>Industry</label>
+          <select class="form-select" id="new-client-industry">
+            <option value="">Select industry…</option>
+            <option>Health</option><option>Fashion</option><option>Tech</option>
+            <option>Food</option><option>Finance</option><option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Website</label>
+          <input type="url" class="form-input" id="new-client-website" placeholder="https://example.com">
+        </div>
+      </div>
+
+      <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin:16px 0 10px">Meta Assets <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-dim)">(optional)</span></div>
+
       <div class="form-group">
-        <label>Industry</label>
-        <select class="form-select" id="new-client-industry">
-          <option value="">Select industry…</option>
-          <option>Health</option><option>Fashion</option><option>Tech</option>
-          <option>Food</option><option>Finance</option><option>Other</option>
+        <label>Ad Account</label>
+        <select class="form-select" id="new-client-ad-account" onchange="onNewClientAdAccountChange(this.value)">
+          <option value="">Select ad account…</option>
         </select>
       </div>
-      <div class="form-group">
-        <label>Website</label>
-        <input type="url" class="form-input" id="new-client-website" placeholder="https://example.com">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label>Default Page</label>
+          <select class="form-select" id="new-client-page">
+            <option value="">Select page…</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Default Pixel</label>
+          <select class="form-select" id="new-client-pixel">
+            <option value="">Select pixel…</option>
+          </select>
+        </div>
       </div>
+
       <div class="form-group">
         <label>Color</label>
         <div class="color-picker" id="color-picker"></div>
         <input type="hidden" id="new-client-color" value="#6c63ff">
       </div>
+      <div id="new-client-err" style="color:var(--error);font-size:12px;display:none;margin-top:4px"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeModal('new-client-modal')">Cancel</button>
-      <button class="btn-primary" onclick="createClient()">Create Client</button>
+      <button class="btn-primary" id="create-client-btn" onclick="createClient()">Create Client</button>
     </div>
   </div>
 </div>
@@ -513,12 +540,28 @@ a{color:inherit;text-decoration:none}
 
       <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
 
+      <!-- Meta App Credentials -->
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px">Meta App Credentials</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div>
+            <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">App ID</label>
+            <input type="text" id="settings-meta-app-id" class="form-input" placeholder="123456789…" style="font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">App Secret</label>
+            <input type="password" id="settings-meta-app-secret" class="form-input" placeholder="••••••••" autocomplete="off" style="font-size:13px">
+          </div>
+        </div>
+        <button onclick="saveMetaCredentials()" style="padding:8px 16px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer">Save Meta Credentials</button>
+        <span id="settings-meta-status" style="font-size:12px;margin-left:10px;color:var(--text-dim)"></span>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
       <!-- API Keys / Setup -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px">API Keys</div>
-        <div style="color:var(--text-secondary);font-size:13px;line-height:1.7;margin-bottom:10px">
-          Update API keys without editing files:
-        </div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px">All API Keys</div>
         <button onclick="window.location.href='/setup'" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer">Open Setup Wizard →</button>
       </div>
 
@@ -729,6 +772,27 @@ function addTypingIndicator() {
 }
 
 // ── Chat / streaming ───────────────────────────────────────────────────────
+let _streamAbort = null;
+
+function stopStreaming() {
+  if (_streamAbort) { _streamAbort.abort(); _streamAbort = null; }
+}
+
+function _setSendState(streaming) {
+  const btn = document.getElementById('send-btn');
+  if (streaming) {
+    btn.textContent = '■ Stop';
+    btn.onclick = stopStreaming;
+    btn.disabled = false;
+    btn.style.background = 'var(--error)';
+  } else {
+    btn.textContent = 'Send →';
+    btn.onclick = sendMessage;
+    btn.disabled = !state.activeConvId;
+    btn.style.background = '';
+  }
+}
+
 async function sendMessage() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
@@ -736,8 +800,7 @@ async function sendMessage() {
   input.value = ''; autoResize(input);
   document.getElementById('cmd-dropdown').classList.remove('visible');
   appendMessage('user', text);
-  const sendBtn = document.getElementById('send-btn');
-  sendBtn.disabled = true;
+  _setSendState(true);
   const typing = addTypingIndicator();
   let aiDiv = null;
   let bubble = null;
@@ -751,49 +814,67 @@ async function sendMessage() {
     }
   }
 
+  _streamAbort = new AbortController();
+
   try {
     const resp = await fetch(`/api/chat/${state.activeConvId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, attachments: state.uploads.map(u=>u.path) }),
+      signal: _streamAbort.signal,
     });
     if (resp.status === 401) { showConnectScreen(); return; }
     typing.remove();
 
-    // Create the assistant bubble eagerly
     aiDiv = document.createElement('div');
     aiDiv.className = 'msg assistant';
-    aiDiv.innerHTML = `<div class="msg-bubble"></div>
+    aiDiv.innerHTML = `<div class="msg-bubble"><div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div></div>
       <div class="msg-meta">🔷 Uplinx <span class="msg-copy">Copy</span></div>`;
     document.getElementById('messages').appendChild(aiDiv);
     bubble = aiDiv.querySelector('.msg-bubble');
 
-    await handleStream(resp, bubble, (chunk) => {
+    const errorMsg = await handleStream(resp, bubble, (chunk) => {
       accumulatedText += chunk;
       clearTimeout(renderTimer);
       renderTimer = setTimeout(flushRender, 30);
     });
 
-    // Final render with full markdown
     clearTimeout(renderTimer);
     if (accumulatedText) {
       bubble.innerHTML = renderMarkdown(accumulatedText);
+      if (errorMsg) {
+        bubble.innerHTML += `<div style="color:var(--warning);font-size:12px;margin-top:8px;padding:6px 10px;background:rgba(245,158,11,0.1);border-radius:6px;border-left:3px solid var(--warning)">⚠️ ${errorMsg}</div>`;
+      }
+    } else if (errorMsg) {
+      bubble.innerHTML = `<div style="color:var(--error);font-size:13px;padding:4px 0">⚠️ ${errorMsg}</div>`;
+    } else {
+      bubble.innerHTML = '<em style="color:var(--text-dim);font-size:13px">No response received. Please try again.</em>';
     }
     bubble.closest('.messages').scrollTop = 99999;
 
-    // Wire up copy button
     const copyBtn = aiDiv.querySelector('.msg-copy');
-    if (copyBtn) {
-      copyBtn.onclick = () => navigator.clipboard.writeText(accumulatedText).then(()=>toast('Copied!','success'));
-    }
+    if (copyBtn) copyBtn.addEventListener('click', () =>
+      navigator.clipboard.writeText(accumulatedText).then(()=>toast('Copied!','success')));
+
   } catch(e) {
     typing.remove();
-    if (!accumulatedText) {
-      appendMessage('assistant', 'Sorry, something went wrong. Please try again.');
+    if (e.name === 'AbortError') {
+      if (aiDiv) {
+        clearTimeout(renderTimer);
+        if (accumulatedText) {
+          bubble.innerHTML = renderMarkdown(accumulatedText) + '<em style="color:var(--text-dim);font-size:11px;display:block;margin-top:6px">[stopped]</em>';
+        } else {
+          aiDiv.remove();
+        }
+      }
+    } else {
+      if (aiDiv) { aiDiv.remove(); }
+      appendMessage('assistant', `Sorry, I couldn't reach the server. Please check your connection and try again.\n\nError: ${e.message}`);
+      console.error('Chat error:', e);
     }
-    console.error('Chat error:', e);
   } finally {
-    sendBtn.disabled = !state.activeConvId;
+    _streamAbort = null;
+    _setSendState(false);
     refreshApiUsage();
   }
 }
@@ -803,9 +884,9 @@ async function handleStream(response, container, onText) {
   const dec = new TextDecoder();
   let buf = '';
   const msgs = document.getElementById('messages');
-
-  // Track active tool steps keyed by name
   const toolSteps = {};
+  let lastError = null;
+  let firstChunk = true;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -820,32 +901,28 @@ async function handleStream(response, container, onText) {
       try {
         const evt = JSON.parse(raw);
         if (evt.type === 'text') {
+          if (firstChunk) { container.innerHTML = ''; firstChunk = false; }
           onText(evt.text || '');
           msgs.scrollTop = 99999;
         } else if (evt.type === 'tool_start') {
+          if (firstChunk) { container.innerHTML = ''; firstChunk = false; }
           const stepEl = document.createElement('div');
           stepEl.className = 'tool-step';
-          const toolLabel = (evt.name || 'tool').replace(/_/g, ' ');
-          stepEl.textContent = `${toolLabel}…`;
+          stepEl.textContent = (evt.name || 'tool').replace(/_/g, ' ') + '…';
           container.appendChild(stepEl);
           toolSteps[evt.name] = stepEl;
           msgs.scrollTop = 99999;
         } else if (evt.type === 'tool_result') {
           const stepEl = toolSteps[evt.name];
-          if (stepEl) {
-            const toolLabel = (evt.name || 'tool').replace(/_/g, ' ');
-            stepEl.classList.add('done');
-            stepEl.textContent = `${toolLabel} ✓`;
-          }
+          if (stepEl) { stepEl.classList.add('done'); stepEl.textContent = (evt.name||'tool').replace(/_/g,' ') + ' ✓'; }
         } else if (evt.type === 'error') {
-          // Log to console only — don't pollute the chat UI with raw errors
-          console.error('Agent error:', evt.message || evt);
+          lastError = evt.message || 'An unexpected error occurred';
+          console.error('Agent error:', lastError);
         }
-      } catch(e) {
-        // Ignore malformed SSE lines
-      }
+      } catch { /* malformed SSE line — ignore */ }
     }
   }
+  return lastError;
 }
 
 // ── Input helpers ──────────────────────────────────────────────────────────
@@ -1088,22 +1165,98 @@ const COLORS = ['#6c63ff','#22c55e','#f59e0b','#ef4444','#06b6d4','#a855f7','#f9
 function openNewClientModal() {
   const picker = document.getElementById('color-picker');
   picker.innerHTML = COLORS.map(c=>`<div class="color-swatch${c==='#6c63ff'?' selected':''}" style="background:${c}" onclick="selectColor('${c}',this)" title="${c}"></div>`).join('');
+  // Populate ad account select from already-loaded meta accounts
+  const adSel = document.getElementById('new-client-ad-account');
+  const pageSel = document.getElementById('new-client-page');
+  adSel.innerHTML = '<option value="">Select ad account…</option>';
+  pageSel.innerHTML = '<option value="">Select page…</option>';
+  document.getElementById('new-client-pixel').innerHTML = '<option value="">Select pixel…</option>';
+  // Copy options from context panel if already loaded
+  const ctxSel = document.getElementById('ctx-ad-account');
+  Array.from(ctxSel.options).forEach(o => {
+    if (o.value) adSel.add(new Option(o.text, o.value));
+  });
+  const ctxPage = document.getElementById('ctx-page');
+  Array.from(ctxPage.options).forEach(o => {
+    if (o.value) pageSel.add(new Option(o.text, o.value));
+  });
+  document.getElementById('new-client-err').style.display = 'none';
   openModal('new-client-modal');
 }
+
+async function onNewClientAdAccountChange(adAccountId) {
+  const pixelSel = document.getElementById('new-client-pixel');
+  pixelSel.innerHTML = '<option value="">Loading…</option>';
+  if (!adAccountId) { pixelSel.innerHTML = '<option value="">Select pixel…</option>'; return; }
+  try {
+    const data = await api('GET', `/api/meta/pixels/${adAccountId}`);
+    pixelSel.innerHTML = '<option value="">Select pixel…</option>';
+    if (data && data.data) data.data.forEach(p => pixelSel.add(new Option(p.name||p.id, p.id)));
+  } catch { pixelSel.innerHTML = '<option value="">No pixels found</option>'; }
+}
+
 function selectColor(hex, el) {
   document.getElementById('new-client-color').value = hex;
   document.querySelectorAll('.color-swatch').forEach(s=>s.classList.remove('selected'));
   el.classList.add('selected');
 }
+
 async function createClient() {
   const name = document.getElementById('new-client-name').value.trim();
-  if (!name) { toast('Client name is required','error'); return; }
-  const r = await api('POST', '/api/clients', {
-    name, industry: document.getElementById('new-client-industry').value,
-    website: document.getElementById('new-client-website').value,
-    color_tag: document.getElementById('new-client-color').value,
-  });
-  if (r) { toast('Client created!','success'); closeModal('new-client-modal'); loadClients(); }
+  const errEl = document.getElementById('new-client-err');
+  errEl.style.display = 'none';
+  if (!name) { errEl.textContent = 'Client name is required'; errEl.style.display='block'; return; }
+  const btn = document.getElementById('create-client-btn');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const r = await api('POST', '/api/clients', {
+      name, industry: document.getElementById('new-client-industry').value,
+      website: document.getElementById('new-client-website').value,
+      color_tag: document.getElementById('new-client-color').value,
+    });
+    if (!r) return;
+    // If an ad account was selected, link it to the client
+    const adAccountId = document.getElementById('new-client-ad-account').value;
+    if (adAccountId && r.id) {
+      const adSel = document.getElementById('new-client-ad-account');
+      const nickname = adSel.options[adSel.selectedIndex].text || name;
+      const pageId = document.getElementById('new-client-page').value;
+      const pageSel = document.getElementById('new-client-page');
+      const pageName = pageId ? (pageSel.options[pageSel.selectedIndex].text || '') : '';
+      const pixelId = document.getElementById('new-client-pixel').value;
+      const pixelSel = document.getElementById('new-client-pixel');
+      const pixelName = pixelId ? (pixelSel.options[pixelSel.selectedIndex].text || '') : '';
+      await api('POST', `/api/clients/${r.id}/ad-accounts`, {
+        nickname, meta_account_id: adAccountId,
+        default_page_id: pageId || null, default_page_name: pageName || null,
+        default_pixel_id: pixelId || null, default_pixel_name: pixelName || null,
+      }).catch(()=>{});
+    }
+    toast('Client created!', 'success');
+    closeModal('new-client-modal');
+    document.getElementById('new-client-name').value = '';
+    loadClients();
+  } catch(e) {
+    errEl.textContent = e.message; errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create Client';
+  }
+}
+
+async function saveMetaCredentials() {
+  const appId = document.getElementById('settings-meta-app-id').value.trim();
+  const appSecret = document.getElementById('settings-meta-app-secret').value.trim();
+  const status = document.getElementById('settings-meta-status');
+  if (!appId && !appSecret) { status.textContent = 'Enter at least one value'; status.style.color='var(--warning)'; return; }
+  status.textContent = 'Saving…'; status.style.color = 'var(--text-dim)';
+  try {
+    await api('POST', '/api/setup/save', { meta_app_id: appId, meta_app_secret: appSecret });
+    status.textContent = '✓ Saved'; status.style.color = 'var(--success)';
+    toast('Meta credentials saved', 'success');
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch(e) {
+    status.textContent = 'Error: ' + e.message; status.style.color = 'var(--error)';
+  }
 }
 
 // ── Modals ─────────────────────────────────────────────────────────────────
@@ -1218,7 +1371,7 @@ async function init() {
     const check = await fetch('/api/accounts/meta');
     if (check.status === 401) { showConnectScreen(); return; }
     showApp();
-    await Promise.all([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), updateStatusIndicators(), loadAccountDropdowns()]);
+    await Promise.allSettled([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), updateStatusIndicators(), loadAccountDropdowns()]);
     // Refresh status every 30 seconds
     setInterval(updateStatusIndicators, 30000);
   } catch(e) { showConnectScreen(); }
