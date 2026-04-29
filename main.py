@@ -129,13 +129,14 @@ app.add_middleware(
 
 SESSION_COOKIE = "uplinx_session"
 PUBLIC_PATHS = {"/health", "/", "/auth/meta", "/auth/meta/callback",
-                "/auth/google", "/auth/google/callback"}
+                "/auth/google", "/auth/google/callback", "/setup"}
 
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
     if (request.url.path in PUBLIC_PATHS
             or request.url.path.startswith("/static")
-            or request.url.path.startswith("/frontend")):
+            or request.url.path.startswith("/frontend")
+            or request.url.path.startswith("/api/setup")):
         return await call_next(request)
 
     token = request.cookies.get(SESSION_COOKIE)
@@ -286,6 +287,99 @@ class CreateCampaignRequest(BaseModel):
     daily_budget_euros: float = 10.0
     status: str = "ACTIVE"
 
+# ── Setup wizard ──────────────────────────────────────────────────────────────
+
+def _is_setup_complete() -> bool:
+    """Return True when at least one AI key and the Meta app ID are configured."""
+    has_meta = bool(settings.META_APP_ID and settings.META_APP_SECRET)
+    has_ai = bool(
+        settings.ANTHROPIC_API_KEY
+        or settings.OPENAI_API_KEY
+        or settings.GROK_API_KEY
+    )
+    return has_meta and has_ai
+
+class SetupSaveRequest(BaseModel):
+    meta_app_id: str = ""
+    meta_app_secret: str = ""
+    ai_provider: str = "claude"
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+    grok_api_key: str = ""
+    grok_model: str = "grok-3"
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page():
+    setup_path = Path("frontend/setup.html")
+    if setup_path.exists():
+        return HTMLResponse(setup_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Setup page not found</h1>", status_code=500)
+
+@app.post("/api/setup/save")
+async def setup_save(req: SetupSaveRequest):
+    """Write provided keys into the .env file and reload settings."""
+    env_path = Path(".env")
+    if not env_path.exists():
+        env_path.write_text("", encoding="utf-8")
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    def _set_key(lines: list[str], key: str, value: str) -> list[str]:
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                lines[i] = f"{key}={value}"
+                return lines
+        lines.append(f"{key}={value}")
+        return lines
+
+    pairs = {
+        "META_APP_ID": req.meta_app_id,
+        "META_APP_SECRET": req.meta_app_secret,
+        "AI_PROVIDER": req.ai_provider,
+        "ANTHROPIC_API_KEY": req.anthropic_api_key,
+        "OPENAI_API_KEY": req.openai_api_key,
+        "OPENAI_MODEL": req.openai_model,
+        "GROK_API_KEY": req.grok_api_key,
+        "GROK_MODEL": req.grok_model,
+        "GOOGLE_CLIENT_ID": req.google_client_id,
+        "GOOGLE_CLIENT_SECRET": req.google_client_secret,
+    }
+    for key, value in pairs.items():
+        lines = _set_key(lines, key, value)
+
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Reload settings in-process so the app picks up new values immediately
+    try:
+        from importlib import reload
+        import config as _config_mod
+        reload(_config_mod)
+        from config import settings as new_settings
+        # Update module-level references
+        import sys
+        sys.modules["config"].settings = new_settings
+        # Reinitialise agent with new provider
+        agent._init_client()
+    except Exception as exc:
+        logger.warning("Could not hot-reload settings: %s", exc)
+
+    return {"success": True, "message": "Settings saved. Restart the app to apply all changes if needed."}
+
+@app.get("/api/setup/status")
+async def setup_status():
+    return {
+        "complete": _is_setup_complete(),
+        "ai_provider": settings.AI_PROVIDER,
+        "has_meta": bool(settings.META_APP_ID),
+        "has_anthropic": bool(settings.ANTHROPIC_API_KEY),
+        "has_openai": bool(settings.OPENAI_API_KEY),
+        "has_grok": bool(settings.GROK_API_KEY),
+        "has_google": bool(settings.GOOGLE_CLIENT_ID),
+    }
+
 # ── Health & frontend ──────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -293,7 +387,10 @@ async def health():
     return {"status": "ok", "version": "1.0.0"}
 
 @app.get("/", response_class=HTMLResponse)
-async def frontend():
+async def frontend(request: Request):
+    # Redirect to setup wizard on first run
+    if not _is_setup_complete():
+        return RedirectResponse("/setup")
     html_path = Path("frontend/index.html")
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
@@ -1148,4 +1245,47 @@ async def api_usage(request: Request, db: AsyncSession = Depends(get_db)):
         "calls_limit": 200,
         "calls_remaining": remaining,
         "is_paused": paused,
+    }
+
+
+# ── AI provider switcher ───────────────────────────────────────────────────────
+
+class SwitchProviderRequest(BaseModel):
+    provider: str  # "claude", "openai", or "grok"
+
+@app.post("/api/ai-provider/switch")
+async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
+    valid = {"claude", "openai", "grok"}
+    if req.provider not in valid:
+        raise HTTPException(400, f"provider must be one of {valid}")
+
+    env_path = Path(".env")
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith("AI_PROVIDER=") or line.startswith("AI_PROVIDER ="):
+                lines[i] = f"AI_PROVIDER={req.provider}"
+                updated = True
+                break
+        if not updated:
+            lines.append(f"AI_PROVIDER={req.provider}")
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Hot-switch the agent
+    settings.AI_PROVIDER = req.provider
+    agent._init_client()
+    logger.info("Switched AI provider to %s", req.provider)
+    return {"success": True, "provider": req.provider, "model": agent.model}
+
+@app.get("/api/ai-provider/current")
+async def current_ai_provider(request: Request):
+    return {
+        "provider": agent._provider,
+        "model": agent.model,
+        "available": {
+            "claude": bool(settings.ANTHROPIC_API_KEY),
+            "openai": bool(settings.OPENAI_API_KEY),
+            "grok": bool(settings.GROK_API_KEY),
+        },
     }

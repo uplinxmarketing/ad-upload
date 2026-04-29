@@ -441,12 +441,34 @@ a{color:inherit;text-decoration:none}
       <button class="modal-close" onclick="closeModal('settings-modal')">×</button>
     </div>
     <div class="modal-body">
-      <div style="color:var(--text-secondary);font-size:13px;line-height:1.7">
-        <p>App is running at <code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px">http://localhost:8000</code></p>
-        <br>
-        <p>To configure the app, edit your <code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px">.env</code> file in the app directory.</p>
-        <br>
-        <p>To add API keys or change settings, stop the server, edit <code>.env</code>, and restart.</p>
+
+      <!-- AI Provider -->
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:12px">AI Assistant</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Choose which AI provider powers the chat:</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap" id="provider-btns">
+          <button onclick="switchProvider('claude')" id="btn-claude" style="flex:1;min-width:90px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-secondary);font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s">Claude</button>
+          <button onclick="switchProvider('openai')" id="btn-openai" style="flex:1;min-width:90px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-secondary);font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s">ChatGPT</button>
+          <button onclick="switchProvider('grok')"  id="btn-grok"  style="flex:1;min-width:90px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-secondary);font-size:13px;font-weight:600;cursor:pointer;transition:all 0.15s">Grok</button>
+        </div>
+        <div id="provider-status" style="font-size:12px;color:var(--text-secondary);margin-top:8px"></div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
+      <!-- API Keys / Setup -->
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px">API Keys</div>
+        <div style="color:var(--text-secondary);font-size:13px;line-height:1.7;margin-bottom:10px">
+          Update API keys without editing files:
+        </div>
+        <button onclick="window.location.href='/setup'" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer">Open Setup Wizard →</button>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
+      <div style="color:var(--text-secondary);font-size:12px;line-height:1.6">
+        App running at <code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px">http://localhost:8000</code>
       </div>
     </div>
   </div>
@@ -944,6 +966,49 @@ async function createClient() {
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if(e.target===m) m.classList.remove('open'); }));
+
+// ── AI Provider ────────────────────────────────────────────────────────────
+async function loadProviderStatus() {
+  try {
+    const d = await api('GET', '/api/ai-provider/current');
+    if (!d) return;
+    highlightProviderBtn(d.provider);
+    document.getElementById('provider-status').textContent =
+      'Active: ' + (d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Grok') +
+      ' (' + d.model + ')';
+  } catch(e) {}
+}
+
+function highlightProviderBtn(provider) {
+  ['claude','openai','grok'].forEach(p => {
+    const btn = document.getElementById('btn-' + p);
+    if (!btn) return;
+    btn.style.borderColor = p === provider ? 'var(--accent)' : 'var(--border)';
+    btn.style.background = p === provider ? 'rgba(108,99,255,0.12)' : 'var(--bg-primary)';
+    btn.style.color = p === provider ? 'var(--accent)' : 'var(--text-secondary)';
+  });
+}
+
+async function switchProvider(provider) {
+  try {
+    const d = await api('POST', '/api/ai-provider/switch', { provider });
+    if (!d) return;
+    highlightProviderBtn(provider);
+    document.getElementById('provider-status').textContent =
+      'Switched to: ' + (provider === 'claude' ? 'Claude' : provider === 'openai' ? 'ChatGPT' : 'Grok') +
+      ' (' + d.model + ')';
+    toast('Switched to ' + (provider === 'claude' ? 'Claude' : provider === 'openai' ? 'ChatGPT' : 'Grok'), 'success');
+  } catch(e) {
+    toast('Failed to switch provider: ' + e.message, 'error');
+  }
+}
+
+// Load provider when settings modal opens
+const _origOpenModal = openModal;
+function openModal(id) {
+  _origOpenModal(id);
+  if (id === 'settings-modal') loadProviderStatus();
+}
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {

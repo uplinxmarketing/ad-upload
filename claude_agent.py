@@ -47,13 +47,38 @@ _TOOL_TIMEOUT_SECONDS = 30
 
 
 class ClaudeAgent:
-    """Streaming Claude agent with full tool-use support."""
+    """Streaming AI agent supporting Claude, OpenAI, and Grok providers."""
 
     def __init__(self) -> None:
         from config import settings
+        self.settings = settings
+        self._init_client()
 
-        self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        self.model = "claude-opus-4-7"
+    def _init_client(self) -> None:
+        """Initialise the correct client based on AI_PROVIDER setting."""
+        from config import settings
+        # Reload settings in case they changed at runtime
+        self.settings = settings
+        provider = settings.AI_PROVIDER.lower()
+
+        if provider == "openai":
+            from openai import AsyncOpenAI
+            self._provider = "openai"
+            self._openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            self.model = settings.OPENAI_MODEL or "gpt-4o"
+        elif provider == "grok":
+            from openai import AsyncOpenAI
+            self._provider = "grok"
+            self._openai_client = AsyncOpenAI(
+                api_key=settings.GROK_API_KEY,
+                base_url="https://api.x.ai/v1",
+            )
+            self.model = settings.GROK_MODEL or "grok-3"
+        else:
+            self._provider = "claude"
+            self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+            self.model = "claude-opus-4-7"
+
         self.max_tokens = 4096
 
     # ------------------------------------------------------------------
@@ -274,83 +299,152 @@ class ClaudeAgent:
         total_tokens = 0
         all_tool_calls: list[dict] = []
 
-        # 4–6. Agentic loop — keep calling Claude until it stops or we hit the turn limit.
+        # Convert Claude tool definitions → OpenAI function format (used for openai/grok)
+        def _to_openai_tools(defs: list[dict]) -> list[dict]:
+            result = []
+            for d in defs:
+                result.append({
+                    "type": "function",
+                    "function": {
+                        "name": d["name"],
+                        "description": d.get("description", ""),
+                        "parameters": d.get("input_schema", {"type": "object", "properties": {}}),
+                    },
+                })
+            return result
+
+        # 4–6. Agentic loop — keep calling the AI until it stops or we hit the turn limit.
         for turn in range(_MAX_AGENTIC_TURNS):
             try:
                 accumulated_text = ""
-                pending_tool_uses: list[dict] = []  # {id, name, input_json_str}
+                pending_tool_uses: list[dict] = []  # {id, name, input}
 
-                async with self.client.messages.stream(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    system=system_prompt,
-                    messages=messages,
-                    tools=tool_definitions,
-                ) as stream:
-                    current_tool_id: Optional[str] = None
-                    current_tool_name: Optional[str] = None
-                    current_tool_input_parts: list[str] = []
+                if self._provider == "claude":
+                    # ── Claude (Anthropic) streaming ──────────────────────────
+                    async with self.client.messages.stream(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        system=system_prompt,
+                        messages=messages,
+                        tools=tool_definitions,
+                    ) as stream:
+                        current_tool_id: Optional[str] = None
+                        current_tool_name: Optional[str] = None
+                        current_tool_input_parts: list[str] = []
 
-                    async for event in stream:
-                        event_type = event.type
+                        async for event in stream:
+                            event_type = event.type
 
-                        # --- Text streaming ---
-                        if event_type == "content_block_start":
-                            block = event.content_block
-                            if block.type == "text":
-                                # Nothing to do; text comes via deltas
-                                pass
-                            elif block.type == "tool_use":
-                                current_tool_id = block.id
-                                current_tool_name = block.name
-                                current_tool_input_parts = []
-                                yield _sse({"type": "tool_start", "name": block.name})
+                            if event_type == "content_block_start":
+                                block = event.content_block
+                                if block.type == "tool_use":
+                                    current_tool_id = block.id
+                                    current_tool_name = block.name
+                                    current_tool_input_parts = []
+                                    yield _sse({"type": "tool_start", "name": block.name})
 
-                        elif event_type == "content_block_delta":
-                            delta = event.delta
-                            if delta.type == "text_delta":
-                                accumulated_text += delta.text
-                                yield _sse({"type": "text", "text": delta.text})
-                            elif delta.type == "input_json_delta":
-                                if current_tool_input_parts is not None:
-                                    current_tool_input_parts.append(
-                                        delta.partial_json
-                                    )
+                            elif event_type == "content_block_delta":
+                                delta = event.delta
+                                if delta.type == "text_delta":
+                                    accumulated_text += delta.text
+                                    yield _sse({"type": "text", "text": delta.text})
+                                elif delta.type == "input_json_delta":
+                                    if current_tool_input_parts is not None:
+                                        current_tool_input_parts.append(delta.partial_json)
 
-                        elif event_type == "content_block_stop":
-                            if current_tool_id is not None:
-                                raw_input = "".join(current_tool_input_parts)
-                                try:
-                                    tool_input = json.loads(raw_input) if raw_input else {}
-                                except json.JSONDecodeError:
-                                    tool_input = {}
-                                pending_tool_uses.append(
-                                    {
+                            elif event_type == "content_block_stop":
+                                if current_tool_id is not None:
+                                    raw_input = "".join(current_tool_input_parts)
+                                    try:
+                                        tool_input = json.loads(raw_input) if raw_input else {}
+                                    except json.JSONDecodeError:
+                                        tool_input = {}
+                                    pending_tool_uses.append({
                                         "id": current_tool_id,
                                         "name": current_tool_name,
                                         "input": tool_input,
-                                    }
-                                )
-                                current_tool_id = None
-                                current_tool_name = None
-                                current_tool_input_parts = []
+                                    })
+                                    current_tool_id = None
+                                    current_tool_name = None
+                                    current_tool_input_parts = []
 
-                        elif event_type == "message_delta":
-                            # Track token usage
-                            if hasattr(event, "usage") and event.usage:
-                                total_tokens += getattr(event.usage, "output_tokens", 0)
+                            elif event_type == "message_delta":
+                                if hasattr(event, "usage") and event.usage:
+                                    total_tokens += getattr(event.usage, "output_tokens", 0)
 
-                        elif event_type == "message_stop":
-                            pass  # handled below via stream.get_final_message()
+                    final_message = await stream.get_final_message()
+                    stop_reason: str = final_message.stop_reason or "end_turn"
+                    if final_message.usage:
+                        total_tokens = (
+                            final_message.usage.input_tokens
+                            + final_message.usage.output_tokens
+                        )
 
-                # Retrieve the completed message object for stop_reason + usage
-                final_message = await stream.get_final_message()
-                stop_reason: str = final_message.stop_reason or "end_turn"
-                if final_message.usage:
-                    total_tokens = (
-                        final_message.usage.input_tokens
-                        + final_message.usage.output_tokens
-                    )
+                else:
+                    # ── OpenAI / Grok streaming ───────────────────────────────
+                    # Build OpenAI-format messages (system first, then history)
+                    oai_messages: list[dict] = [{"role": "system", "content": system_prompt}]
+                    for m in messages:
+                        role = m.get("role", "user")
+                        content = m.get("content", "")
+                        if isinstance(content, list):
+                            # flatten Claude-style content blocks to plain text
+                            content = " ".join(
+                                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                            )
+                        oai_messages.append({"role": role, "content": content})
+
+                    oai_tools = _to_openai_tools(tool_definitions)
+
+                    # Collect streaming chunks
+                    tool_calls_raw: dict[int, dict] = {}  # index → {id, name, arguments}
+                    async for chunk in await self._openai_client.chat.completions.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        messages=oai_messages,
+                        tools=oai_tools if oai_tools else None,
+                        stream=True,
+                    ):
+                        choice = chunk.choices[0] if chunk.choices else None
+                        if choice is None:
+                            continue
+                        delta = choice.delta
+
+                        if delta.content:
+                            accumulated_text += delta.content
+                            yield _sse({"type": "text", "text": delta.content})
+
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.index
+                                if idx not in tool_calls_raw:
+                                    tool_calls_raw[idx] = {"id": tc.id or "", "name": "", "arguments": ""}
+                                    if tc.function and tc.function.name:
+                                        tool_calls_raw[idx]["name"] = tc.function.name
+                                        yield _sse({"type": "tool_start", "name": tc.function.name})
+                                if tc.id and not tool_calls_raw[idx]["id"]:
+                                    tool_calls_raw[idx]["id"] = tc.id
+                                if tc.function:
+                                    if tc.function.name and not tool_calls_raw[idx]["name"]:
+                                        tool_calls_raw[idx]["name"] = tc.function.name
+                                    if tc.function.arguments:
+                                        tool_calls_raw[idx]["arguments"] += tc.function.arguments
+
+                        if choice.finish_reason:
+                            stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
+
+                    # Parse accumulated tool calls
+                    for idx in sorted(tool_calls_raw):
+                        tc = tool_calls_raw[idx]
+                        try:
+                            tool_input = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                        except json.JSONDecodeError:
+                            tool_input = {}
+                        pending_tool_uses.append({
+                            "id": tc["id"] or f"call_{idx}",
+                            "name": tc["name"],
+                            "input": tool_input,
+                        })
 
             except anthropic.APIConnectionError as exc:
                 logger.error("Anthropic connection error: %s", exc)
@@ -362,12 +456,7 @@ class ClaudeAgent:
                 return
             except anthropic.APIStatusError as exc:
                 logger.error("Anthropic API error %d: %s", exc.status_code, exc.message)
-                yield _sse(
-                    {
-                        "type": "error",
-                        "message": f"Claude API error ({exc.status_code}): {exc.message}",
-                    }
-                )
+                yield _sse({"type": "error", "message": f"Claude API error ({exc.status_code}): {exc.message}"})
                 return
             except Exception as exc:
                 logger.error("Unexpected error in stream_response: %s", exc, exc_info=True)
@@ -381,38 +470,14 @@ class ClaudeAgent:
                 break
 
             # --- Execute tool calls ---
-            # Append the assistant's turn (with tool_use blocks) to messages
-            assistant_content: list[dict] = []
-            if accumulated_text:
-                assistant_content.append({"type": "text", "text": accumulated_text})
-            for tu in pending_tool_uses:
-                assistant_content.append(
-                    {
-                        "type": "tool_use",
-                        "id": tu["id"],
-                        "name": tu["name"],
-                        "input": tu["input"],
-                    }
-                )
-            messages.append({"role": "assistant", "content": assistant_content})
-
-            # Run all independent tool calls in parallel
             async def _run_tool(tu: dict) -> tuple[str, str, str]:
-                """Execute one tool and return (tool_id, name, result_str)."""
                 try:
                     result_str = await asyncio.wait_for(
-                        self.execute_tool(
-                            tu["name"], tu["input"], session_data, db
-                        ),
+                        self.execute_tool(tu["name"], tu["input"], session_data, db),
                         timeout=_TOOL_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError:
-                    result_str = json.dumps(
-                        {
-                            "error": f"Tool '{tu['name']}' timed out after "
-                            f"{_TOOL_TIMEOUT_SECONDS}s"
-                        }
-                    )
+                    result_str = json.dumps({"error": f"Tool '{tu['name']}' timed out after {_TOOL_TIMEOUT_SECONDS}s"})
                 except Exception as exc:
                     result_str = json.dumps({"error": str(exc)})
                 return tu["id"], tu["name"], result_str
@@ -420,32 +485,40 @@ class ClaudeAgent:
             tool_tasks = [_run_tool(tu) for tu in pending_tool_uses]
             tool_results: list[tuple[str, str, str]] = await asyncio.gather(*tool_tasks)
 
-            # Yield tool_result events and build the tool result message
-            tool_result_content: list[dict] = []
+            # Yield tool_result events and update messages
             for tool_id, tool_name, result_str in tool_results:
-                yield _sse(
-                    {
-                        "type": "tool_result",
-                        "name": tool_name,
-                        "result": result_str[:500],
-                    }
-                )
-                tool_result_content.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": result_str,
-                    }
-                )
-                all_tool_calls.append(
-                    {"name": tool_name, "input": next(
-                        tu["input"] for tu in pending_tool_uses if tu["id"] == tool_id
-                    )}
-                )
+                yield _sse({"type": "tool_result", "name": tool_name, "result": result_str[:500]})
+                all_tool_calls.append({
+                    "name": tool_name,
+                    "input": next(tu["input"] for tu in pending_tool_uses if tu["id"] == tool_id),
+                })
 
-            messages.append({"role": "user", "content": tool_result_content})
+            if self._provider == "claude":
+                # Claude expects tool_use blocks in assistant turn, then tool_result in user turn
+                assistant_content: list[dict] = []
+                if accumulated_text:
+                    assistant_content.append({"type": "text", "text": accumulated_text})
+                for tu in pending_tool_uses:
+                    assistant_content.append({"type": "tool_use", "id": tu["id"], "name": tu["name"], "input": tu["input"]})
+                messages.append({"role": "assistant", "content": assistant_content})
 
-            # Continue the loop to get Claude's next response
+                tool_result_content: list[dict] = []
+                for tool_id, tool_name, result_str in tool_results:
+                    tool_result_content.append({"type": "tool_result", "tool_use_id": tool_id, "content": result_str})
+                messages.append({"role": "user", "content": tool_result_content})
+            else:
+                # OpenAI expects assistant message with tool_calls, then role=tool messages
+                oai_tool_calls_msg: list[dict] = []
+                for tu in pending_tool_uses:
+                    oai_tool_calls_msg.append({
+                        "id": tu["id"],
+                        "type": "function",
+                        "function": {"name": tu["name"], "arguments": json.dumps(tu["input"])},
+                    })
+                messages.append({"role": "assistant", "content": accumulated_text or None, "tool_calls": oai_tool_calls_msg})
+                for tool_id, tool_name, result_str in tool_results:
+                    messages.append({"role": "tool", "tool_call_id": tool_id, "content": result_str})
+
             if stop_reason == "tool_use":
                 continue
             break

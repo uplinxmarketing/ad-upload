@@ -65,6 +65,25 @@ class Settings(BaseSettings):
     """Anthropic API key used to authenticate Claude API requests."""
 
     # ------------------------------------------------------------------
+    # AI Provider
+    # ------------------------------------------------------------------
+
+    AI_PROVIDER: str = "claude"
+    """Active AI provider: 'claude', 'openai', or 'grok'."""
+
+    OPENAI_API_KEY: str = ""
+    """OpenAI API key (used when AI_PROVIDER=openai)."""
+
+    OPENAI_MODEL: str = "gpt-4o"
+    """OpenAI model name, e.g. gpt-4o, gpt-4-turbo."""
+
+    GROK_API_KEY: str = ""
+    """xAI Grok API key (used when AI_PROVIDER=grok)."""
+
+    GROK_MODEL: str = "grok-3"
+    """Grok model name, e.g. grok-3."""
+
+    # ------------------------------------------------------------------
     # Security
     # ------------------------------------------------------------------
 
