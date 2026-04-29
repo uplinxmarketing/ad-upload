@@ -9,24 +9,14 @@ echo   UPLINX META MANAGER - INSTALLER
 echo  ============================================
 echo.
 
-REM ── Architecture detection (info only) ───────────────────────────────────
-if "%PROCESSOR_ARCHITECTURE%"=="AMD64" (
-    echo  System: 64-bit Windows detected
-) else if "%PROCESSOR_ARCHITEW6432%"=="AMD64" (
-    echo  System: 32-bit process on 64-bit Windows detected
-) else (
-    echo  System: 32-bit Windows detected
-)
-echo.
-
-REM ── Python check ─────────────────────────────────────────────────────────
+REM ── Python check ─────────────────────────────────────────────────────────────
 echo  Checking for Python...
 where python >nul 2>&1
 if errorlevel 1 (
     echo.
     echo  ERROR: Python is not installed or not in PATH.
     echo.
-    echo  Please download and install Python 3.11 from:
+    echo  Please download and install Python 3.11 or newer from:
     echo    https://www.python.org/downloads/
     echo.
     echo  IMPORTANT: During installation tick the box:
@@ -41,40 +31,59 @@ for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYVER=%%i
 echo  Found: %PYVER%
 echo.
 
-REM ── Clean up old venv ─────────────────────────────────────────────────────
+REM ── Clean up old venv ─────────────────────────────────────────────────────────
 if exist venv (
     echo  Removing previous installation...
     rmdir /s /q venv 2>nul
-    if exist venv (
-        echo  WARNING: Could not remove old venv - it may be in use.
-        echo  Please close any other terminals running the app and try again.
-        goto :error
-    )
     echo  Done.
+    echo.
 )
 
-REM ── Create virtual environment ────────────────────────────────────────────
-echo.
+REM ── Create virtual environment ────────────────────────────────────────────────
 echo  [1/5] Creating virtual environment...
-python -m venv venv
-if not exist venv\Scripts\python.exe (
-    echo.
-    echo  ERROR: Virtual environment creation failed.
-    echo  Try running install.bat as Administrator (right-click ^> Run as administrator)
-    echo.
-    goto :error
-)
+
+python -m venv venv 2>&1
+if exist venv\Scripts\python.exe goto :venv_ok
+
+REM venv failed — try with --without-pip fallback
+echo  First attempt failed, trying alternate method...
+python -m venv venv --without-pip 2>&1
+if exist venv\Scripts\python.exe goto :venv_ok
+
+echo.
+echo  ERROR: Could not create a virtual environment.
+echo.
+echo  Common causes:
+echo    1. Python installation is incomplete or corrupted
+echo       Solution: Reinstall Python from python.org (tick "Add to PATH")
+echo.
+echo    2. This folder is on a network drive or has permission issues
+echo       Solution: Move the folder to your Desktop or Documents
+echo.
+echo    3. Antivirus is blocking venv creation
+echo       Solution: Temporarily disable antivirus, then reinstall
+echo.
+goto :error
+
+:venv_ok
 echo         OK
 
-REM ── Install dependencies ──────────────────────────────────────────────────
+REM ── Install dependencies ──────────────────────────────────────────────────────
 echo  [2/5] Installing packages (may take 3-5 minutes)...
 echo         Please wait, do not close this window.
 echo.
+
+REM If venv was created without pip, bootstrap it first
+if not exist venv\Scripts\pip.exe (
+    echo  Bootstrapping pip...
+    venv\Scripts\python -m ensurepip --upgrade
+)
+
 venv\Scripts\pip install -r requirements.txt --no-warn-script-location
 echo.
 echo  [2/5] Packages installed.
 
-REM ── Create .env file ──────────────────────────────────────────────────────
+REM ── Create .env file ──────────────────────────────────────────────────────────
 echo  [3/5] Setting up configuration file...
 if not exist .env (
     copy .env.example .env >nul 2>&1
@@ -90,7 +99,7 @@ if not exist .env (
     echo         .env already exists - your settings are unchanged.
 )
 
-REM ── Create required folders ───────────────────────────────────────────────
+REM ── Create required folders ───────────────────────────────────────────────────
 echo  [4/5] Creating folders...
 if not exist uploads         mkdir uploads
 if not exist skills          mkdir skills
@@ -99,7 +108,7 @@ if not exist skills\clients  mkdir skills\clients
 if not exist logs            mkdir logs
 echo         OK
 
-REM ── All done ──────────────────────────────────────────────────────────────
+REM ── All done ──────────────────────────────────────────────────────────────────
 echo  [5/5] Done.
 echo.
 echo  ============================================
@@ -108,17 +117,13 @@ echo  ============================================
 echo.
 echo   Next steps:
 echo.
-echo   1. Open the file named  .env  in this folder
-echo      (right-click > Open with > Notepad)
+echo   1. Double-click  start.bat  to launch the app
 echo.
-echo   2. Fill in these three values:
-echo        META_APP_ID=
-echo        META_APP_SECRET=
-echo        ANTHROPIC_API_KEY=
+echo   2. The app will open in your browser at:
+echo        http://localhost:8000
 echo.
-echo   3. Save .env
-echo.
-echo   4. Double-click  start.bat  to launch the app
+echo   3. A setup wizard will guide you through
+echo      entering your API keys in the browser.
 echo.
 echo  ============================================
 echo.
