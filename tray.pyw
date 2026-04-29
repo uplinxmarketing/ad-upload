@@ -17,11 +17,9 @@ from pathlib import Path
 def find_free_port(start: int = 8000) -> int:
     for port in range(start, start + 11):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("", port))
+            s.settimeout(0.1)
+            if s.connect_ex(("127.0.0.1", port)) != 0:
                 return port
-            except OSError:
-                continue
     return start
 
 

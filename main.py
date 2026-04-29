@@ -353,21 +353,34 @@ async def setup_save(req: SetupSaveRequest):
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    # Reload settings in-process so the app picks up new values immediately
+    # Update the live settings object in-place so _is_setup_complete()
+    # returns True immediately without needing a server restart.
     try:
-        from importlib import reload
-        import config as _config_mod
-        reload(_config_mod)
-        from config import settings as new_settings
-        # Update module-level references
-        import sys
-        sys.modules["config"].settings = new_settings
-        # Reinitialise agent with new provider
+        if req.meta_app_id:
+            settings.META_APP_ID = req.meta_app_id
+        if req.meta_app_secret:
+            settings.META_APP_SECRET = req.meta_app_secret
+        if req.ai_provider:
+            settings.AI_PROVIDER = req.ai_provider
+        if req.anthropic_api_key:
+            settings.ANTHROPIC_API_KEY = req.anthropic_api_key
+        if req.openai_api_key:
+            settings.OPENAI_API_KEY = req.openai_api_key
+        if req.openai_model:
+            settings.OPENAI_MODEL = req.openai_model
+        if req.groq_api_key:
+            settings.GROQ_API_KEY = req.groq_api_key
+        if req.groq_model:
+            settings.GROQ_MODEL = req.groq_model
+        if req.google_client_id:
+            settings.GOOGLE_CLIENT_ID = req.google_client_id
+        if req.google_client_secret:
+            settings.GOOGLE_CLIENT_SECRET = req.google_client_secret
         agent._init_client()
     except Exception as exc:
-        logger.warning("Could not hot-reload settings: %s", exc)
+        logger.warning("Could not update live settings: %s", exc)
 
-    return {"success": True, "message": "Settings saved. Restart the app to apply all changes if needed."}
+    return {"success": True, "message": "Settings saved."}
 
 @app.get("/api/setup/status")
 async def setup_status():

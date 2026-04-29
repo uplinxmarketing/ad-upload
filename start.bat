@@ -35,17 +35,9 @@ venv\Scripts\pip install -r requirements.txt -q --no-warn-script-location
 echo  OK
 echo.
 
-REM ── Find a free port (8000 → 8010) ───────────────────────────────────────
-set PORT=8000
-for %%P in (8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8010) do (
-    if "!PORT_FOUND!" == "" (
-        netstat -ano 2>nul | findstr /r "[ :]%%P " | findstr "LISTENING" >nul 2>&1
-        if errorlevel 1 (
-            set PORT=%%P
-            set PORT_FOUND=1
-        )
-    )
-)
+REM ── Find a free port using Python (reliable on all Windows versions) ──────
+for /f %%P in ('venv\Scripts\python find_port.py') do set PORT=%%P
+if "%PORT%"=="" set PORT=8000
 
 echo  Starting server at http://localhost:%PORT%
 echo  Press Ctrl+C to stop.
@@ -54,7 +46,7 @@ echo  Opening browser in 5 seconds...
 echo  If it does not open, visit: http://localhost:%PORT%
 echo.
 
-REM Open browser after 5 seconds (gives server time to fully start)
+REM Open browser after 5 seconds
 start "" /b cmd /c "timeout /t 5 /nobreak >nul 2>&1 && start http://localhost:%PORT%"
 
 REM Start the server
