@@ -383,16 +383,24 @@ class ClaudeAgent:
                 else:
                     # ── OpenAI / Groq streaming ──────────────────────────────
                     # Build OpenAI-format messages (system first, then history)
+                    # Must preserve tool_calls / tool_call_id fields so multi-turn
+                    # tool-use works correctly on the second+ loop iteration.
                     oai_messages: list[dict] = [{"role": "system", "content": system_prompt}]
                     for m in messages:
                         role = m.get("role", "user")
-                        content = m.get("content", "")
+                        content = m.get("content")
                         if isinstance(content, list):
-                            # flatten Claude-style content blocks to plain text
                             content = " ".join(
                                 b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                             )
-                        oai_messages.append({"role": role, "content": content})
+                        msg: dict = {"role": role}
+                        if content is not None:
+                            msg["content"] = content
+                        if "tool_calls" in m:
+                            msg["tool_calls"] = m["tool_calls"]
+                        if "tool_call_id" in m:
+                            msg["tool_call_id"] = m["tool_call_id"]
+                        oai_messages.append(msg)
 
                     oai_tools = _to_openai_tools(tool_definitions)
 
@@ -581,8 +589,12 @@ class ClaudeAgent:
             if handler is None:
                 return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
-            # Inject db + session_data so MCP functions can access DB/tokens
-            result = await handler(db=db, session_data=session_data, **tool_input)
+            # MCP tools use session_id (facebook_user_id) to look up tokens
+            # themselves — do NOT pass db/session_data as kwargs.
+            call_kwargs = dict(tool_input)
+            if "session_id" not in call_kwargs:
+                call_kwargs["session_id"] = session_data.get("meta_user_id", "")
+            result = await handler(**call_kwargs)
 
             if isinstance(result, (dict, list)):
                 return json.dumps(result)
