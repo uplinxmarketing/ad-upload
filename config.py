@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     """Anthropic API key used to authenticate Claude API requests."""
 
+    CLAUDE_MODEL: str = "claude-opus-4-7"
+    """Claude model to use, e.g. claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001."""
+
     # ------------------------------------------------------------------
     # AI Provider
     # ------------------------------------------------------------------

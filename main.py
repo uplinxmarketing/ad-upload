@@ -308,6 +308,7 @@ class SetupSaveRequest(BaseModel):
     meta_app_secret: str = ""
     ai_provider: str = "claude"
     anthropic_api_key: str = ""
+    claude_model: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
     groq_api_key: str = ""
@@ -344,6 +345,7 @@ async def setup_save(req: SetupSaveRequest):
         "META_APP_SECRET": req.meta_app_secret,
         "AI_PROVIDER": req.ai_provider,
         "ANTHROPIC_API_KEY": req.anthropic_api_key,
+        "CLAUDE_MODEL": req.claude_model,
         "OPENAI_API_KEY": req.openai_api_key,
         "OPENAI_MODEL": req.openai_model,
         "GROQ_API_KEY": req.groq_api_key,
@@ -772,6 +774,8 @@ async def api_ad_accounts(request: Request, db: AsyncSession = Depends(get_db)):
     result = await meta_api.get_ad_accounts(token)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
+    uid = get_session(request).get("meta_user_id", "anon")
+    await api_tracker.record_call(uid)
     return result["data"]
 
 
@@ -781,17 +785,20 @@ async def api_pages(request: Request, db: AsyncSession = Depends(get_db)):
     result = await meta_api.get_pages(token)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
+    uid = get_session(request).get("meta_user_id", "anon")
+    await api_tracker.record_call(uid)
     return result["data"]
 
 
 @app.get("/api/meta/pixels/{ad_account_id}")
 async def api_pixels(ad_account_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     token = await get_meta_token(request, db)
-    # meta_api.get_pixels prepends act_ itself, so strip it if already present
     clean_id = ad_account_id[4:] if ad_account_id.startswith("act_") else ad_account_id
     result = await meta_api.get_pixels(token, clean_id)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
+    uid = get_session(request).get("meta_user_id", "anon")
+    await api_tracker.record_call(uid)
     return result["data"]
 
 
@@ -801,6 +808,8 @@ async def api_instagram(page_id: str, request: Request, db: AsyncSession = Depen
     result = await meta_api.get_instagram_accounts(token, page_id)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
+    uid = get_session(request).get("meta_user_id", "anon")
+    await api_tracker.record_call(uid)
     return result["data"]
 
 
@@ -1352,7 +1361,8 @@ async def api_usage(request: Request, db: AsyncSession = Depends(get_db)):
 # ── AI provider switcher ───────────────────────────────────────────────────────
 
 class SwitchProviderRequest(BaseModel):
-    provider: str  # "claude", "openai", or "groq"
+    provider: str           # "claude", "openai", or "groq"
+    model: Optional[str] = None  # specific model version (optional)
 
 @app.post("/api/ai-provider/switch")
 async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
@@ -1361,22 +1371,33 @@ async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
         raise HTTPException(400, f"provider must be one of {valid}")
 
     env_path = Path(".env")
+    lines: list[str] = []
     if env_path.exists():
         lines = env_path.read_text(encoding="utf-8").splitlines()
-        updated = False
-        for i, line in enumerate(lines):
-            if line.startswith("AI_PROVIDER=") or line.startswith("AI_PROVIDER ="):
-                lines[i] = f"AI_PROVIDER={req.provider}"
-                updated = True
-                break
-        if not updated:
-            lines.append(f"AI_PROVIDER={req.provider}")
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    # Hot-switch the agent
+    def _set_env(key: str, val: str) -> None:
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                lines[i] = f"{key}={val}"; return
+        lines.append(f"{key}={val}")
+
+    _set_env("AI_PROVIDER", req.provider)
+
+    # Persist and hot-apply model if supplied
+    if req.model:
+        model_key = {"claude": "CLAUDE_MODEL", "openai": "OPENAI_MODEL", "groq": "GROQ_MODEL"}[req.provider]
+        _set_env(model_key, req.model)
+        if req.provider == "claude":
+            settings.CLAUDE_MODEL = req.model
+        elif req.provider == "openai":
+            settings.OPENAI_MODEL = req.model
+        elif req.provider == "groq":
+            settings.GROQ_MODEL = req.model
+
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     settings.AI_PROVIDER = req.provider
     agent._init_client()
-    logger.info("Switched AI provider to %s", req.provider)
+    logger.info("Switched AI provider to %s model=%s", req.provider, agent.model)
     return {"success": True, "provider": req.provider, "model": agent.model}
 
 @app.get("/api/ai-provider/current")
@@ -1388,5 +1409,10 @@ async def current_ai_provider(request: Request):
             "claude": bool(settings.ANTHROPIC_API_KEY),
             "openai": bool(settings.OPENAI_API_KEY),
             "groq": bool(settings.GROQ_API_KEY),
+        },
+        "models": {
+            "claude": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+            "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1"],
+            "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
         },
     }
