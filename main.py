@@ -130,7 +130,8 @@ app.add_middleware(
 
 SESSION_COOKIE = "uplinx_session"
 PUBLIC_PATHS = {"/health", "/", "/auth/meta", "/auth/meta/callback",
-                "/auth/google", "/auth/google/callback", "/setup"}
+                "/auth/google", "/auth/google/callback", "/setup",
+                "/api/accounts/meta/token"}
 
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
@@ -648,6 +649,88 @@ async def api_disconnect_meta(account_id: int, request: Request, db: AsyncSessio
     acc.is_active = False
     await db.commit()
     return {"success": True}
+
+
+class DirectTokenRequest(BaseModel):
+    access_token: str
+
+@app.post("/api/accounts/meta/token")
+async def api_meta_direct_token(
+    req: DirectTokenRequest,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Connect a Meta account using a direct access token (no OAuth required).
+
+    Accepts a system user token or any long-lived Meta access token.
+    Validates it against the Graph API, then stores it exactly like an
+    OAuth-obtained token and creates a session.
+    """
+    token = req.access_token.strip()
+    if not token:
+        raise HTTPException(400, "access_token is required")
+
+    # Validate token and fetch user info from Graph API
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"{settings.meta_graph_base_url}/me",
+            params={"fields": "id,name,email", "access_token": token},
+        )
+    if r.status_code != 200:
+        detail = r.json().get("error", {}).get("message", "Invalid token")
+        raise HTTPException(400, f"Meta rejected the token: {detail}")
+
+    data = r.json()
+    user_id: str = data.get("id", "")
+    user_name: str = data.get("name", "")
+    user_email: str = data.get("email", "")
+
+    if not user_id:
+        raise HTTPException(400, "Could not retrieve user ID from Meta")
+
+    # Upsert the account record
+    result = await db.execute(
+        select(ConnectedMetaAccount).where(
+            ConnectedMetaAccount.facebook_user_id == user_id
+        )
+    )
+    acc = result.scalar_one_or_none()
+    encrypted = encryption.encrypt(token)
+
+    if acc:
+        acc.encrypted_short_token = encrypted
+        acc.encrypted_long_token = encrypted
+        acc.user_name = user_name
+        acc.user_email = user_email
+        acc.token_expiry = None  # system user tokens don't expire
+        acc.is_active = True
+        acc.last_used_at = datetime.utcnow()
+    else:
+        acc = ConnectedMetaAccount(
+            facebook_user_id=user_id,
+            user_name=user_name,
+            user_email=user_email,
+            encrypted_short_token=encrypted,
+            encrypted_long_token=encrypted,
+            token_expiry=None,
+            is_active=True,
+        )
+        db.add(acc)
+
+    await db.commit()
+
+    # Create session
+    session_token = create_session_token({"meta_user_id": user_id})
+    response.set_cookie(
+        SESSION_COOKIE, session_token,
+        httponly=True, samesite="lax", max_age=86400 * 30,
+    )
+    return {
+        "success": True,
+        "user_id": user_id,
+        "user_name": user_name,
+    }
 
 
 @app.get("/api/accounts/google")

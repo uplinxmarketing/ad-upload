@@ -320,7 +320,17 @@
           <input type="password" id="meta_app_secret" placeholder="••••••••••••••••" autocomplete="off">
         </div>
       </div>
-      <p class="hint">Find these at <a href="#" onclick="return false">developers.facebook.com</a> → Your App → Settings → Basic</p>
+      <p class="hint">Find these at developers.facebook.com → Your App → Settings → Basic</p>
+
+      <div style="margin-top:14px;padding:14px;background:rgba(108,99,255,0.07);border:1px solid rgba(108,99,255,0.2);border-radius:8px">
+        <div style="font-size:12px;font-weight:700;color:#a0a0c0;margin-bottom:6px">🔑 Skip OAuth — paste an access token directly</div>
+        <div class="field" style="margin-bottom:6px">
+          <input type="password" id="meta_direct_token" placeholder="EAAxxxxxx… (optional — connect after setup instead)" autocomplete="off">
+        </div>
+        <p class="hint">Use a Meta system user token or a long-lived user token.<br>
+        Get one: Business Suite → Settings → System Users → Generate Token<br>
+        Or: <a href="#" onclick="return false">Graph API Explorer</a> → Generate User Token (no domain needed)</p>
+      </div>
     </div>
 
     <!-- Google (optional) -->
@@ -391,10 +401,29 @@
       const data = await res.json();
 
       if (res.ok && data.success) {
-        msg.className = 'status-msg success';
-        msg.textContent = '✓ Settings saved! Redirecting to the app…';
+        // If a direct token was provided, connect it now
+        const directToken = document.getElementById('meta_direct_token').value.trim();
+        if (directToken) {
+          try {
+            const tr = await fetch('/api/accounts/meta/token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ access_token: directToken }),
+            });
+            const td = await tr.json();
+            if (!tr.ok) throw new Error(td.detail || 'Token connect failed');
+            msg.className = 'status-msg success';
+            msg.textContent = '✓ Settings saved & Meta connected as ' + (td.user_name || td.user_id) + '! Redirecting…';
+          } catch(te) {
+            msg.className = 'status-msg success';
+            msg.textContent = '✓ Settings saved! (Token error: ' + te.message + ') Redirecting…';
+          }
+        } else {
+          msg.className = 'status-msg success';
+          msg.textContent = '✓ Settings saved! Redirecting to the app…';
+        }
         msg.style.display = 'block';
-        setTimeout(() => { window.location.href = '/'; }, 1500);
+        setTimeout(() => { window.location.href = '/'; }, 2000);
       } else {
         throw new Error(data.detail || data.message || 'Save failed');
       }
