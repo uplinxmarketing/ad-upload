@@ -19,31 +19,43 @@ from sqlalchemy.future import select
 
 logger = logging.getLogger("uplinx")
 
-BASE_SYSTEM_PROMPT = """You are Uplinx Meta Manager — an expert Meta advertising \
-and social media agent with deep knowledge of Facebook and Instagram advertising, \
-campaign management, creative strategy, and performance analytics.
+BASE_SYSTEM_PROMPT = """You are Uplinx — an expert Meta Ads manager and strategist \
+built into a web app. You have deep knowledge of Facebook and Instagram advertising, \
+campaign structure, creative best practices, audience targeting, budget optimisation, \
+and performance analytics.
 
-You execute tasks autonomously using your tools. When a user gives you an instruction, \
-break it into steps and complete all of them without asking unnecessary questions.
+You are connected to the user's Meta account via the Graph API. All account IDs, \
+tokens, pages, and pixels are already loaded — you NEVER need to ask for credentials.
 
-Core behaviours:
-- Always confirm before: delete, pause all, bulk operations
-- Use upload_multiple_ads for any multi-ad task — never upload one at a time
-- Only call list_ad_accounts / list_pages when the user explicitly requests it or \
-when the required IDs are genuinely unknown — NEVER on simple questions or greetings
-- Use the Ad Account ID, Page ID, and Pixel ID already shown in the Active Context \
-section below; do not fetch them again if they are already present
-- For analytics: always give actionable recommendations, not just raw numbers
-- When files are uploaded or a folder path is given: scan and process immediately
-- When a Google Doc or PDF is shared: read it fully before starting any task
-- Match Post/Story image pairs automatically by filename
-- Apply naming conventions from active skills
-- Never ask for credentials — they are handled automatically
-- Report completed tasks with IDs for reference
-- Flag anomalies proactively: high CPM, low ROAS, disapproved ads, expiring tokens
-- If context is incomplete: ask only for what is missing, then proceed immediately
-- If you cannot complete a task (missing permission, unsupported feature, API error): \
-explain clearly what went wrong and what the user can do to fix it"""
+## How to behave
+
+**Be direct and action-oriented.**
+- When the user gives an instruction, break it into steps and execute all of them.
+- Ask only for information that is genuinely missing and cannot be inferred.
+- Confirm before destructive actions (delete, pause all, bulk changes).
+
+**Use context before calling tools.**
+- The "Active Context" section below contains the selected Ad Account, Page, Pixel, \
+Instagram account and timezone. Use those IDs directly.
+- The "Available Accounts" section lists every ad account and page the user has access \
+to. Use those for lookups — do NOT call list_ad_accounts or list_pages unless the user \
+explicitly asks you to refresh the list.
+- Only call a tool when you genuinely need live data (e.g. current campaign metrics, \
+creating/editing objects, uploading ads).
+
+**For ad uploads:**
+- Always use upload_multiple_ads for multi-ad tasks.
+- Match Post/Story image pairs by filename automatically.
+- Apply naming conventions from active Skills if any are loaded.
+
+**For analytics:**
+- Always give actionable recommendations alongside raw numbers.
+- Flag anomalies: high CPM, low ROAS, disapproved ads, budget pacing issues.
+
+**When something fails:**
+- Explain clearly what went wrong (API error message, missing permission, etc.).
+- Suggest a concrete next step the user can take to resolve it.
+- Never silently swallow errors."""
 
 # Maximum number of agentic turns before aborting to prevent runaway loops
 _MAX_AGENTIC_TURNS = 20
@@ -162,61 +174,123 @@ class ClaudeAgent:
         conversation_id: int,
         client_id: Optional[int],
         db: AsyncSession,
+        session_data: Optional[dict] = None,
     ) -> str:
-        """
-        Build the full system prompt: base + active context summary + skills.
+        """Build the full system prompt with pre-loaded account context.
 
-        Active context (ad account, page, pixel, etc.) is loaded from the DB
-        for the conversation.  Skills are loaded via skills_manager and
-        injected after the context block.
+        Loads ad accounts, pages, and pixels directly into the prompt so the
+        AI already knows the user's full setup without making tool calls —
+        equivalent to handing Claude a .env file with all account IDs.
         """
-        from database import ActiveContext, Client, ClientAdAccount
+        from database import ActiveContext, Client, ClientAdAccount, ConnectedMetaAccount
         from skills_manager import load_skills_for_conversation, build_skills_system_prompt
+        import meta_api
+        from security import FernetEncryption
 
         parts: list[str] = [BASE_SYSTEM_PROMPT]
 
-        # --- Active context ---
-        ctx_stmt = select(ActiveContext).where(
-            ActiveContext.conversation_id == conversation_id
+        # ── 1. Active conversation context ────────────────────────────────
+        ctx_result = await db.execute(
+            select(ActiveContext).where(ActiveContext.conversation_id == conversation_id)
         )
-        ctx_result = await db.execute(ctx_stmt)
         ctx: Optional[ActiveContext] = ctx_result.scalar_one_or_none()
 
-        context_lines: list[str] = []
-
-        # Client info
+        active_lines: list[str] = []
         if client_id is not None:
             client_row = await db.get(Client, client_id)
             if client_row:
-                context_lines.append(f"- Active client: {client_row.name}")
-                if client_row.industry:
-                    context_lines.append(f"- Industry: {client_row.industry}")
+                active_lines.append(f"- Client: {client_row.name}" +
+                    (f" ({client_row.industry})" if client_row.industry else ""))
+                if client_row.website:
+                    active_lines.append(f"- Website: {client_row.website}")
 
         if ctx is not None:
             if ctx.selected_ad_account_id:
-                context_lines.append(f"- Ad Account ID: {ctx.selected_ad_account_id}")
+                active_lines.append(f"- **Selected Ad Account ID: {ctx.selected_ad_account_id}**")
             if ctx.selected_page_id:
-                context_lines.append(f"- Facebook Page ID: {ctx.selected_page_id}")
+                active_lines.append(f"- **Selected Facebook Page ID: {ctx.selected_page_id}**")
             if ctx.selected_pixel_id:
-                context_lines.append(f"- Pixel ID: {ctx.selected_pixel_id}")
+                active_lines.append(f"- **Selected Pixel ID: {ctx.selected_pixel_id}**")
             if ctx.selected_instagram_id:
-                context_lines.append(f"- Instagram Account ID: {ctx.selected_instagram_id}")
+                active_lines.append(f"- **Selected Instagram Account ID: {ctx.selected_instagram_id}**")
             if ctx.selected_timezone and ctx.selected_timezone != "UTC":
-                context_lines.append(f"- Client timezone: {ctx.selected_timezone}")
-            if ctx.selected_meta_account_id:
-                context_lines.append(
-                    f"- Connected Meta User ID: {ctx.selected_meta_account_id}"
-                )
+                active_lines.append(f"- Timezone: {ctx.selected_timezone}")
 
-        if context_lines:
-            parts.append("\n## Active Context\n" + "\n".join(context_lines))
+        if active_lines:
+            parts.append("\n## Active Context\n" + "\n".join(active_lines))
         else:
-            parts.append(
-                "\n## Active Context\nNo context selected. "
-                "Ask the user to select a client and ad account if required."
-            )
+            parts.append("\n## Active Context\nNo ad account selected yet. "
+                         "The user should select one from the right panel, or you can list "
+                         "available accounts from the Available Accounts section below.")
 
-        # --- Skills ---
+        # ── 2. Pre-load all available accounts from Meta API ──────────────
+        # This is the key improvement: inject the full account list so the AI
+        # never needs to call list_ad_accounts / list_pages on its own.
+        try:
+            uid = (session_data or {}).get("meta_user_id", "")
+            if uid:
+                enc = FernetEncryption()
+                acc_result = await db.execute(
+                    select(ConnectedMetaAccount).where(
+                        ConnectedMetaAccount.facebook_user_id == uid,
+                        ConnectedMetaAccount.is_active == True,
+                    )
+                )
+                meta_acc = acc_result.scalar_one_or_none()
+                if meta_acc:
+                    token = enc.decrypt(meta_acc.encrypted_long_token)
+                    account_lines: list[str] = [
+                        f"Connected as: {meta_acc.user_name or uid}"
+                    ]
+
+                    # Ad accounts
+                    ad_result = await meta_api.get_ad_accounts(token)
+                    if ad_result.get("success"):
+                        accounts = ad_result["data"].get("data", [])
+                        if accounts:
+                            account_lines.append("\n**Ad Accounts:**")
+                            for a in accounts[:30]:  # cap at 30
+                                account_lines.append(
+                                    f"  - {a.get('name', a.get('account_id', '?'))} "
+                                    f"| ID: {a.get('id','?')} "
+                                    f"| Currency: {a.get('currency','?')} "
+                                    f"| Timezone: {a.get('timezone_name','?')}"
+                                )
+
+                    # Pages
+                    page_result = await meta_api.get_pages(token)
+                    if page_result.get("success"):
+                        pages = page_result["data"].get("data", [])
+                        if pages:
+                            account_lines.append("\n**Facebook Pages:**")
+                            for p in pages[:20]:
+                                account_lines.append(
+                                    f"  - {p.get('name','?')} | ID: {p.get('id','?')}"
+                                )
+
+                    parts.append("\n## Available Accounts\n" + "\n".join(account_lines))
+        except Exception as exc:
+            logger.debug("Could not pre-load account list into prompt: %s", exc)
+
+        # ── 3. Client ad account defaults ─────────────────────────────────
+        if client_id is not None:
+            try:
+                aa_result = await db.execute(
+                    select(ClientAdAccount).where(ClientAdAccount.client_id == client_id)
+                )
+                client_accounts = aa_result.scalars().all()
+                if client_accounts:
+                    aa_lines = ["\n## Client Ad Account Defaults"]
+                    for aa in client_accounts:
+                        aa_lines.append(f"- {aa.nickname} | Meta ID: {aa.meta_account_id}" +
+                            (f" | Page: {aa.default_page_id}" if aa.default_page_id else "") +
+                            (f" | Pixel: {aa.default_pixel_id}" if aa.default_pixel_id else "") +
+                            (f" | TZ: {aa.default_timezone}" if aa.default_timezone else ""))
+                    parts.append("\n".join(aa_lines))
+            except Exception as exc:
+                logger.debug("Could not load client ad accounts: %s", exc)
+
+        # ── 4. Skills ──────────────────────────────────────────────────────
         try:
             skills = await load_skills_for_conversation(conversation_id, client_id, db)
             skills_section = await build_skills_system_prompt(skills)
@@ -286,7 +360,7 @@ class ClaudeAgent:
         # 3. Build system prompt
         try:
             system_prompt = await self.build_system_prompt(
-                conversation_id, client_id, db
+                conversation_id, client_id, db, session_data=session_data
             )
         except Exception as exc:
             logger.warning("Could not build full system prompt, using base: %s", exc)
