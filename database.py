@@ -24,6 +24,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -45,7 +46,11 @@ async_engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-    connect_args={"check_same_thread": False},
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 30,           # wait up to 30s for lock instead of failing immediately
+    },
+    pool_pre_ping=True,
 )
 
 AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
@@ -54,6 +59,13 @@ AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+
+async def _enable_wal(conn):
+    """Enable WAL journal mode so concurrent reads never block writes."""
+    await conn.execute(text("PRAGMA journal_mode=WAL"))
+    await conn.execute(text("PRAGMA synchronous=NORMAL"))
+    await conn.execute(text("PRAGMA busy_timeout=30000"))
 
 
 # ---------------------------------------------------------------------------
@@ -568,12 +580,9 @@ class ScheduledPost(Base):
 
 
 async def init_db() -> None:
-    """Create all database tables if they do not already exist.
-
-    Should be called once on application startup, typically from the FastAPI
-    ``lifespan`` context manager.
-    """
+    """Create all database tables and enable WAL mode on startup."""
     async with async_engine.begin() as conn:
+        await _enable_wal(conn)
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables initialised.")
 

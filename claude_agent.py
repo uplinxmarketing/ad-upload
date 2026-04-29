@@ -139,6 +139,7 @@ class ClaudeAgent:
         )
         db.add(msg)
         await db.flush()
+        await db.commit()   # release SQLite write lock immediately
         logger.debug(
             "Saved message role=%s conversation_id=%d tokens=%d",
             role,
@@ -406,11 +407,13 @@ class ClaudeAgent:
 
                     # Collect streaming chunks
                     tool_calls_raw: dict[int, dict] = {}  # index → {id, name, arguments}
+                    stop_reason = "end_turn"  # default; updated by finish_reason
                     async for chunk in await self._openai_client.chat.completions.create(
                         model=self.model,
                         max_tokens=self.max_tokens,
                         messages=oai_messages,
                         tools=oai_tools if oai_tools else None,
+                        tool_choice="auto" if oai_tools else None,
                         stream=True,
                     ):
                         choice = chunk.choices[0] if chunk.choices else None
@@ -426,24 +429,28 @@ class ClaudeAgent:
                             for tc in delta.tool_calls:
                                 idx = tc.index
                                 if idx not in tool_calls_raw:
-                                    tool_calls_raw[idx] = {"id": tc.id or "", "name": "", "arguments": ""}
-                                    if tc.function and tc.function.name:
-                                        tool_calls_raw[idx]["name"] = tc.function.name
-                                        yield _sse({"type": "tool_start", "name": tc.function.name})
-                                if tc.id and not tool_calls_raw[idx]["id"]:
+                                    tool_calls_raw[idx] = {"id": "", "name": "", "arguments": ""}
+                                if tc.id:
                                     tool_calls_raw[idx]["id"] = tc.id
                                 if tc.function:
-                                    if tc.function.name and not tool_calls_raw[idx]["name"]:
-                                        tool_calls_raw[idx]["name"] = tc.function.name
+                                    if tc.function.name:
+                                        if not tool_calls_raw[idx]["name"]:
+                                            tool_calls_raw[idx]["name"] = tc.function.name
+                                            yield _sse({"type": "tool_start", "name": tc.function.name})
                                     if tc.function.arguments:
                                         tool_calls_raw[idx]["arguments"] += tc.function.arguments
 
                         if choice.finish_reason:
-                            stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
+                            if choice.finish_reason == "tool_calls":
+                                stop_reason = "tool_use"
+                            elif choice.finish_reason in ("stop", "length", "end_turn"):
+                                stop_reason = "end_turn"
 
-                    # Parse accumulated tool calls
+                    # Parse accumulated tool calls into pending_tool_uses
                     for idx in sorted(tool_calls_raw):
                         tc = tool_calls_raw[idx]
+                        if not tc["name"]:
+                            continue  # skip empty/malformed entries
                         try:
                             tool_input = json.loads(tc["arguments"]) if tc["arguments"] else {}
                         except json.JSONDecodeError:
@@ -453,6 +460,9 @@ class ClaudeAgent:
                             "name": tc["name"],
                             "input": tool_input,
                         })
+                    # If tool calls present but stop_reason wasn't set by finish_reason
+                    if pending_tool_uses and stop_reason == "end_turn":
+                        stop_reason = "tool_use"
 
             except anthropic.APIConnectionError as exc:
                 logger.error("Anthropic connection error: %s", exc)
@@ -467,8 +477,18 @@ class ClaudeAgent:
                 yield _sse({"type": "error", "message": f"Claude API error ({exc.status_code}): {exc.message}"})
                 return
             except Exception as exc:
-                logger.error("Unexpected error in stream_response: %s", exc, exc_info=True)
-                yield _sse({"type": "error", "message": f"Unexpected error: {exc}"})
+                # Catch OpenAI/Groq SDK errors and any other unexpected errors
+                err_str = str(exc)
+                logger.error("Error in stream_response: %s", err_str, exc_info=True)
+                # Friendly message for common API errors
+                if "400" in err_str or "invalid_request" in err_str.lower():
+                    yield _sse({"type": "error", "message": f"API request error: {err_str}"})
+                elif "401" in err_str or "authentication" in err_str.lower():
+                    yield _sse({"type": "error", "message": "Invalid API key — check your key in Settings."})
+                elif "429" in err_str or "rate_limit" in err_str.lower():
+                    yield _sse({"type": "error", "message": "Rate limit reached. Please wait and retry."})
+                else:
+                    yield _sse({"type": "error", "message": f"Unexpected error: {err_str}"})
                 return
 
             full_response_text += accumulated_text
