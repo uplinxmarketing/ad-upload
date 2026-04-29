@@ -270,7 +270,7 @@ def sanitize_filename(filename: str) -> str:
 def check_path_traversal(path: str) -> bool:
     """Return ``True`` if *path* is free of path-traversal sequences.
 
-    Checks for ``../``, ``..\``, ``/..``, and ``\..`` patterns.
+    Checks for ``../``, ``..\\``, ``/..``, and ``\\..`` patterns.
 
     Args:
         path: A file system path string to inspect.
