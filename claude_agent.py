@@ -590,7 +590,7 @@ class ClaudeAgent:
                 if "400" in err_str or "invalid_request" in err_str.lower():
                     yield _sse({"type": "error", "message": f"API request error: {err_str}"})
                 elif "401" in err_str or "authentication" in err_str.lower():
-                    yield _sse({"type": "error", "message": "Invalid API key — check your key in Settings."})
+                    yield _sse({"type": "error", "message": "Invalid API key — go to Settings → Open Setup Wizard and re-enter your API key for the selected provider."})
                 elif "429" in err_str or "rate_limit" in err_str.lower():
                     yield _sse({"type": "error", "message": "Rate limit reached. Please wait and retry."})
                 else:
