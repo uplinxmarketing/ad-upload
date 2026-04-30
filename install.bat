@@ -1,3 +1,4 @@
 @echo off
 REM Launch the Uplinx GUI installer (PowerShell)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer.ps1"
+REM -Sta is required for Windows Forms (Single-Threaded Apartment)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Sta -File "%~dp0installer.ps1"
