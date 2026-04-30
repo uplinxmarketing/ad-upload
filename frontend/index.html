@@ -1474,16 +1474,22 @@ async function loadProviderStatus() {
   try {
     const d = await api('GET', '/api/ai-provider/current');
     if (!d) return;
-    // Update availability map before selectProvider so buttons render correctly
     if (d.available) Object.assign(_providerAvailable, d.available);
-    // Force-set selected provider bypassing the key check (backend already validated)
     _selectedProvider = d.provider;
-    const opts = (PROVIDER_MODELS[d.provider] || []).map(m => `<option value="${m.id}">${m.label}</option>`).join('');
-    [document.getElementById('model-select'), document.getElementById('panel-model-select')]
-      .forEach(sel => { if (sel) { sel.innerHTML = opts; sel.value = d.model; } });
     highlightProviderBtn(d.provider);
-    const providerName = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
-    const status = `Active: ${providerName} — ${d.model}`;
+
+    let status;
+    if (d.provider === 'none') {
+      status = 'No AI connected — add an API key in Settings';
+      [document.getElementById('model-select'), document.getElementById('panel-model-select')]
+        .forEach(sel => { if (sel) sel.innerHTML = '<option>— no key configured —</option>'; });
+    } else {
+      const opts = (PROVIDER_MODELS[d.provider] || []).map(m => `<option value="${m.id}">${m.label}</option>`).join('');
+      [document.getElementById('model-select'), document.getElementById('panel-model-select')]
+        .forEach(sel => { if (sel) { sel.innerHTML = opts; sel.value = d.model; } });
+      const providerName = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
+      status = `Active: ${providerName} — ${d.model}`;
+    }
     const el = document.getElementById('provider-status');
     if (el) el.textContent = status;
     const pel = document.getElementById('panel-provider-status');
@@ -1537,13 +1543,17 @@ async function updateStatusIndicators() {
     const d = await api('GET', '/api/ai-provider/current');
     if (d) {
       if (d.available) Object.assign(_providerAvailable, d.available);
-      // Always sync _selectedProvider to what the backend is actually using
       _selectedProvider = d.provider;
       highlightProviderBtn(d.provider);
-      const label = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
-      const hasKey = d.available && d.available[d.provider];
-      document.getElementById('status-ai-dot').style.background = hasKey ? '#22c55e' : '#f59e0b';
-      document.getElementById('status-ai-label').textContent = label + ' · ' + (d.model || '');
+      if (d.provider === 'none') {
+        document.getElementById('status-ai-dot').style.background = '#ef4444';
+        document.getElementById('status-ai-label').textContent = 'No AI — add key in Settings';
+      } else {
+        const label = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
+        const hasKey = d.available && d.available[d.provider];
+        document.getElementById('status-ai-dot').style.background = hasKey ? '#22c55e' : '#f59e0b';
+        document.getElementById('status-ai-label').textContent = label + ' · ' + (d.model || '');
+      }
     }
   } catch(e) {}
   // Meta
