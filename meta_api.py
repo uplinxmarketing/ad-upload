@@ -167,53 +167,147 @@ async def get_ad_accounts(token: str) -> dict[str, Any]:
 
 
 async def get_pages(token: str) -> dict[str, Any]:
-    """List all Facebook Pages managed by the token owner."""
+    """List all Facebook Pages managed by the token owner (handles pagination)."""
     url = f"{BASE_URL}/me/accounts"
-    return await _api_request(
+    all_pages: list[Any] = []
+    params: dict[str, Any] = {
+        "fields": "id,name,access_token,category",
+        "access_token": token,
+        "limit": "200",
+    }
+
+    while True:
+        result = await _api_request("GET", url, params=params)
+        if not result.get("success"):
+            if not all_pages:
+                return result
+            break
+        body = result["data"]
+        all_pages.extend(body.get("data", []))
+        next_url = body.get("paging", {}).get("next")
+        if not next_url:
+            break
+        # The next cursor URL already contains all query params
+        url = next_url
+        params = {}
+
+    return {"success": True, "data": {"data": all_pages}}
+
+
+async def get_page_access_token(user_token: str, page_id: str) -> Optional[str]:
+    """Fetch the page-scoped access token for a given page ID."""
+    r = await _api_request(
         "GET",
-        url,
-        params={"fields": "id,name,access_token,category", "access_token": token},
+        f"{BASE_URL}/{page_id}",
+        params={"fields": "access_token", "access_token": user_token},
     )
+    if r.get("success"):
+        return r["data"].get("access_token")
+    return None
 
 
-async def get_instagram_accounts(token: str, page_id: str) -> dict[str, Any]:
+async def get_instagram_accounts(
+    token: str,
+    page_id: str,
+    page_token: Optional[str] = None,
+) -> dict[str, Any]:
     """Return Instagram account(s) connected to a Facebook Page.
 
-    Tries the modern instagram_business_account field first (no extra permission
-    needed), then falls back to the legacy /instagram_accounts edge.
+    ``page_token`` should be the page-scoped access token when available;
+    falls back to ``token`` (user token) so existing callers still work.
     Always returns {"success": True, "data": {"data": [...]}} shape.
     """
-    # Method 1 – instagram_business_account field (works for most tokens)
+    effective_token = page_token or token
+
+    # Method 1 – instagram_business_account field (requires page token)
     r1 = await _api_request(
         "GET",
         f"{BASE_URL}/{page_id}",
-        params={"fields": "instagram_business_account{id,username}", "access_token": token},
+        params={"fields": "instagram_business_account{id,username}", "access_token": effective_token},
     )
     if r1.get("success"):
         ig = r1["data"].get("instagram_business_account")
         if ig and ig.get("id"):
             return {"success": True, "data": {"data": [{"id": ig["id"], "username": ig.get("username", ig["id"])}]}}
 
-    # Method 2 – legacy edge (requires instagram_basic permission)
+    # Method 2 – retry with user token if page token didn't work
+    if page_token and page_token != token:
+        r1b = await _api_request(
+            "GET",
+            f"{BASE_URL}/{page_id}",
+            params={"fields": "instagram_business_account{id,username}", "access_token": token},
+        )
+        if r1b.get("success"):
+            ig = r1b["data"].get("instagram_business_account")
+            if ig and ig.get("id"):
+                return {"success": True, "data": {"data": [{"id": ig["id"], "username": ig.get("username", ig["id"])}]}}
+
+    # Method 3 – legacy edge (requires instagram_basic permission)
     r2 = await _api_request(
         "GET",
         f"{BASE_URL}/{page_id}/instagram_accounts",
-        params={"fields": "id,username", "access_token": token},
+        params={"fields": "id,username", "access_token": effective_token},
     )
-    if r2.get("success"):
+    if r2.get("success") and r2["data"].get("data"):
         return r2
 
     return {"success": True, "data": {"data": []}}
 
 
 async def get_pixels(token: str, ad_account_id: str) -> dict[str, Any]:
-    """List Meta pixels attached to an ad account."""
+    """List Meta pixels accessible for an ad account.
+
+    Tries the direct adspixels edge first (pixels owned by or shared with the
+    ad account), then falls back to any Business Manager the user manages so
+    that BM-owned pixels are also returned.
+    """
     url = f"{BASE_URL}/act_{ad_account_id}/adspixels"
-    return await _api_request(
+    r1 = await _api_request(
         "GET",
         url,
-        params={"fields": "id,name", "access_token": token},
+        params={"fields": "id,name", "access_token": token, "limit": "200"},
     )
+    if r1.get("success") and r1["data"].get("data"):
+        return r1
+
+    # Fallback: fetch pixels via all accessible Business Managers
+    biz_result = await _api_request(
+        "GET",
+        f"{BASE_URL}/me/businesses",
+        params={"fields": "id,name", "access_token": token, "limit": "50"},
+    )
+    all_pixels: list[Any] = []
+    seen_ids: set[str] = set()
+
+    # Include any pixels already found in r1
+    if r1.get("success"):
+        for px in r1["data"].get("data", []):
+            if px.get("id") not in seen_ids:
+                seen_ids.add(px["id"])
+                all_pixels.append(px)
+
+    if biz_result.get("success"):
+        for biz in biz_result["data"].get("data", []):
+            biz_id = biz.get("id")
+            if not biz_id:
+                continue
+            for edge in ("owned_pixels", "client_pixels"):
+                px_result = await _api_request(
+                    "GET",
+                    f"{BASE_URL}/{biz_id}/{edge}",
+                    params={"fields": "id,name", "access_token": token, "limit": "200"},
+                )
+                if px_result.get("success"):
+                    for px in px_result["data"].get("data", []):
+                        if px.get("id") not in seen_ids:
+                            seen_ids.add(px["id"])
+                            all_pixels.append(px)
+
+    if all_pixels:
+        return {"success": True, "data": {"data": all_pixels}}
+
+    # Return r1 even if empty so callers can handle no-pixels gracefully
+    return r1 if r1.get("success") else {"success": True, "data": {"data": []}}
 
 
 async def get_business_portfolios(token: str) -> dict[str, Any]:
