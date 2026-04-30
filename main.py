@@ -1401,6 +1401,14 @@ async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
     if req.provider not in valid:
         raise HTTPException(400, f"provider must be one of {valid}")
 
+    key_available = {
+        "claude": bool(settings.ANTHROPIC_API_KEY),
+        "openai": bool(settings.OPENAI_API_KEY),
+        "groq":   bool(settings.GROQ_API_KEY),
+    }.get(req.provider, False)
+    if not key_available:
+        raise HTTPException(400, f"No API key configured for {req.provider} — add the key in Settings first")
+
     env_path = Path(".env")
     lines: list[str] = []
     if env_path.exists():
