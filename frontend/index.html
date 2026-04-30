@@ -360,6 +360,23 @@ a{color:inherit;text-decoration:none}
     </div>
 
     <div class="panel-section">
+      <div class="panel-label">AI Token Usage</div>
+      <div id="ai-token-provider" style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:6px">—</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px">
+        <div style="background:var(--bg-deep);border-radius:6px;padding:6px 8px;text-align:center">
+          <div style="font-size:18px;font-weight:700;color:var(--text)" id="ai-token-in">0</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:1px">input</div>
+        </div>
+        <div style="background:var(--bg-deep);border-radius:6px;padding:6px 8px;text-align:center">
+          <div style="font-size:18px;font-weight:700;color:var(--text)" id="ai-token-out">0</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:1px">output</div>
+        </div>
+      </div>
+      <div class="api-count" id="ai-token-total">0 tokens this session</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px" id="ai-token-alltime"></div>
+    </div>
+
+    <div class="panel-section">
       <div class="panel-label">Uploaded Files</div>
       <div id="upload-list"><div style="font-size:12px;color:var(--text-dim)">No files uploaded</div></div>
       <button class="panel-btn" style="margin-top:8px" onclick="document.getElementById('file-input').click()">+ Upload Files</button>
@@ -919,6 +936,9 @@ async function handleStream(response, container, onText) {
         } else if (evt.type === 'tool_result') {
           const stepEl = toolSteps[evt.name];
           if (stepEl) { stepEl.classList.add('done'); stepEl.textContent = (evt.name||'tool').replace(/_/g,' ') + ' ✓'; }
+        } else if (evt.type === 'usage') {
+          updateAiTokens(evt.input_tokens || 0, evt.output_tokens || 0,
+                         evt.provider, evt.model);
         } else if (evt.type === 'error') {
           lastError = evt.message || 'An unexpected error occurred';
           console.error('Agent error:', lastError);
@@ -1069,6 +1089,35 @@ async function resetContext() {
   if (!state.activeConvId) return;
   await api('PUT', `/api/conversations/${state.activeConvId}/context`, { selected_ad_account_id: null, selected_page_id: null, selected_pixel_id: null, selected_instagram_id: null });
   toast('Context reset', 'success');
+}
+
+// ── AI token usage ─────────────────────────────────────────────────────────
+const _aiTokens = { input: 0, output: 0 };
+
+function updateAiTokens(inputDelta, outputDelta, provider, model) {
+  _aiTokens.input  += inputDelta;
+  _aiTokens.output += outputDelta;
+  const total = _aiTokens.input + _aiTokens.output;
+  document.getElementById('ai-token-in').textContent  = _aiTokens.input.toLocaleString();
+  document.getElementById('ai-token-out').textContent = _aiTokens.output.toLocaleString();
+  document.getElementById('ai-token-total').textContent = `${total.toLocaleString()} tokens this session`;
+  if (provider && model) {
+    document.getElementById('ai-token-provider').textContent =
+      provider.charAt(0).toUpperCase() + provider.slice(1) + ' / ' + model;
+  }
+}
+
+async function refreshAiUsage() {
+  const data = await api('GET', '/api/ai-usage').catch(() => null);
+  if (!data) return;
+  if (data.provider && data.model) {
+    document.getElementById('ai-token-provider').textContent =
+      data.provider.charAt(0).toUpperCase() + data.provider.slice(1) + ' / ' + data.model;
+  }
+  if (data.alltime_total) {
+    document.getElementById('ai-token-alltime').textContent =
+      `All-time: ${data.alltime_total.toLocaleString()} tokens`;
+  }
 }
 
 // ── API usage ──────────────────────────────────────────────────────────────
@@ -1409,7 +1458,7 @@ async function init() {
     const check = await fetch('/api/accounts/meta');
     if (check.status === 401) { showConnectScreen(); return; }
     showApp();
-    await Promise.allSettled([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), updateStatusIndicators(), loadAccountDropdowns()]);
+    await Promise.allSettled([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), refreshAiUsage(), updateStatusIndicators(), loadAccountDropdowns()]);
     // Refresh status every 30 seconds
     setInterval(updateStatusIndicators, 30000);
   } catch(e) { showConnectScreen(); }

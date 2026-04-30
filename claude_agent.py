@@ -62,6 +62,10 @@ _MAX_AGENTIC_TURNS = 20
 # Per-tool call timeout in seconds
 _TOOL_TIMEOUT_SECONDS = 30
 
+# In-memory AI token usage, keyed by meta_user_id (resets on server restart).
+# Structure: {uid: {"input": int, "output": int, "calls": int, "provider": str, "model": str}}
+_ai_session_tokens: dict[str, dict] = {}
+
 
 class ClaudeAgent:
     """Streaming AI agent supporting Claude, OpenAI, and Groq providers."""
@@ -377,7 +381,9 @@ class ClaudeAgent:
 
         tool_definitions = self.get_tool_definitions()
         full_response_text = ""
-        total_tokens = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_tokens = 0  # kept for DB compat (input + output)
         all_tool_calls: list[dict] = []
 
         # Convert Claude tool definitions → OpenAI function format (used for openai/groq)
@@ -456,10 +462,14 @@ class ClaudeAgent:
                     final_message = await stream.get_final_message()
                     stop_reason: str = final_message.stop_reason or "end_turn"
                     if final_message.usage:
-                        total_tokens = (
-                            final_message.usage.input_tokens
-                            + final_message.usage.output_tokens
-                        )
+                        turn_in  = final_message.usage.input_tokens
+                        turn_out = final_message.usage.output_tokens
+                        total_input_tokens  += turn_in
+                        total_output_tokens += turn_out
+                        total_tokens = total_input_tokens + total_output_tokens
+                        yield _sse({"type": "usage", "input_tokens": turn_in,
+                                    "output_tokens": turn_out, "provider": "claude",
+                                    "model": self.model})
 
                 else:
                     # ── OpenAI / Groq streaming ──────────────────────────────
@@ -488,6 +498,8 @@ class ClaudeAgent:
                     # Collect streaming chunks
                     tool_calls_raw: dict[int, dict] = {}  # index → {id, name, arguments}
                     stop_reason = "end_turn"  # default; updated by finish_reason
+                    turn_in_oai = 0
+                    turn_out_oai = 0
                     async for chunk in await self._openai_client.chat.completions.create(
                         model=self.model,
                         max_tokens=self.max_tokens,
@@ -495,6 +507,7 @@ class ClaudeAgent:
                         tools=oai_tools if oai_tools else None,
                         tool_choice="auto" if oai_tools else None,
                         stream=True,
+                        stream_options={"include_usage": True},
                     ):
                         choice = chunk.choices[0] if chunk.choices else None
                         if choice is None:
@@ -525,6 +538,19 @@ class ClaudeAgent:
                                 stop_reason = "tool_use"
                             elif choice.finish_reason in ("stop", "length", "end_turn"):
                                 stop_reason = "end_turn"
+
+                        # Usage arrives on the final chunk (no choices)
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            turn_in_oai  = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                            turn_out_oai = getattr(chunk.usage, "completion_tokens", 0) or 0
+
+                    if turn_in_oai or turn_out_oai:
+                        total_input_tokens  += turn_in_oai
+                        total_output_tokens += turn_out_oai
+                        total_tokens = total_input_tokens + total_output_tokens
+                        yield _sse({"type": "usage", "input_tokens": turn_in_oai,
+                                    "output_tokens": turn_out_oai,
+                                    "provider": self._provider, "model": self.model})
 
                     # Parse accumulated tool calls into pending_tool_uses
                     for idx in sorted(tool_calls_raw):
@@ -657,6 +683,17 @@ class ClaudeAgent:
             )
         except Exception as exc:
             logger.error("Failed to save assistant message: %s", exc)
+
+        # Update in-memory session token totals
+        uid = session_data.get("meta_user_id", "anon")
+        if uid not in _ai_session_tokens:
+            _ai_session_tokens[uid] = {"input": 0, "output": 0, "calls": 0,
+                                        "provider": self._provider, "model": self.model}
+        _ai_session_tokens[uid]["input"]    += total_input_tokens
+        _ai_session_tokens[uid]["output"]   += total_output_tokens
+        _ai_session_tokens[uid]["calls"]    += 1
+        _ai_session_tokens[uid]["provider"]  = self._provider
+        _ai_session_tokens[uid]["model"]     = self.model
 
         # 8. Signal completion
         yield _sse({"type": "done"})
