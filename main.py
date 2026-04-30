@@ -806,7 +806,9 @@ async def api_pixels(ad_account_id: str, request: Request, db: AsyncSession = De
 @app.get("/api/meta/instagram/{page_id}")
 async def api_instagram(page_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     token = await get_meta_token(request, db)
-    result = await meta_api.get_instagram_accounts(token, page_id)
+    # Instagram Business Account lookup requires the page-scoped token, not the user token
+    page_token = await meta_api.get_page_access_token(token, page_id)
+    result = await meta_api.get_instagram_accounts(token, page_id, page_token=page_token)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
     uid = get_session(request).get("meta_user_id", "anon")
