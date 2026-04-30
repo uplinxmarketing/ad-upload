@@ -112,13 +112,6 @@ a{color:inherit;text-decoration:none}
 .chat-hints{font-size:11px;color:var(--text-dim);margin-top:8px;display:flex;gap:12px}
 .chat-hints span{cursor:pointer;transition:var(--transition)}
 .chat-hints span:hover{color:var(--accent)}
-.cmd-dropdown{position:absolute;bottom:100%;left:0;right:0;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:8px;max-height:240px;overflow-y:auto;display:none;z-index:100}
-.cmd-dropdown.visible{display:block}
-.cmd-item{padding:10px 14px;cursor:pointer;transition:var(--transition);border-bottom:1px solid var(--border)}
-.cmd-item:last-child{border-bottom:none}
-.cmd-item:hover,.cmd-item.selected{background:var(--accent-soft)}
-.cmd-trigger{font-family:var(--font-mono);font-size:12px;color:var(--accent);font-weight:500}
-.cmd-desc{font-size:12px;color:var(--text-secondary);margin-top:2px}
 .chat-input-wrapper{position:relative}
 
 /* ── Right Panel ── */
@@ -263,7 +256,6 @@ a{color:inherit;text-decoration:none}
       <div class="sidebar-nav">
         <div class="sidebar-nav-item" onclick="openModal('connections-modal')">🔗 Connections</div>
         <div class="sidebar-nav-item" onclick="openModal('skills-modal')">📋 Skills</div>
-        <div class="sidebar-nav-item" onclick="openModal('commands-modal')">⚡ Quick Commands</div>
         <div class="sidebar-nav-item" onclick="openModal('settings-modal')">⚙️ Settings</div>
         <div class="sidebar-nav-item" id="sidebar-update-btn" onclick="sidebarCheckUpdate()" style="color:var(--text-dim)">⬇ Check for Updates</div>
       </div>
@@ -288,10 +280,9 @@ a{color:inherit;text-decoration:none}
     </div>
     <div class="chat-input-area">
       <div class="chat-input-wrapper">
-        <div class="cmd-dropdown" id="cmd-dropdown"></div>
         <div class="chat-input-box" id="drop-zone">
           <button class="chat-attach" title="Attach file" onclick="document.getElementById('file-input').click()">📎</button>
-          <textarea id="chat-input" placeholder="Type a message… or / for commands" rows="1"
+          <textarea id="chat-input" placeholder="Type a message…" rows="1"
             oninput="autoResize(this);handleInput(this)"
             onkeydown="handleKeydown(event)"></textarea>
           <button class="chat-send" id="send-btn" onclick="sendMessage()" disabled>Send →</button>
@@ -537,19 +528,6 @@ a{color:inherit;text-decoration:none}
   </div>
 </div>
 
-<!-- Quick Commands Modal -->
-<div class="modal-overlay" id="commands-modal">
-  <div class="modal" style="width:560px">
-    <div class="modal-header">
-      <div class="modal-title">⚡ Quick Commands</div>
-      <button class="modal-close" onclick="closeModal('commands-modal')">×</button>
-    </div>
-    <div class="modal-body">
-      <div id="commands-modal-list" style="display:flex;flex-direction:column;gap:8px"></div>
-    </div>
-  </div>
-</div>
-
 <!-- Settings Modal -->
 <div class="modal-overlay" id="settings-modal">
   <div class="modal">
@@ -595,10 +573,33 @@ a{color:inherit;text-decoration:none}
 
       <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
 
-      <!-- API Keys / Setup -->
+      <!-- API Keys inline update -->
       <div style="margin-bottom:16px">
-        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px">All API Keys</div>
-        <button onclick="window.location.href='/setup'" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer">Open Setup Wizard →</button>
+        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:12px">API Keys</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">Claude (Anthropic) API Key</label>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="settings-anthropic-key" class="form-input" placeholder="sk-ant-…" autocomplete="off" style="flex:1;font-size:13px">
+              <button onclick="saveApiKey('anthropic')" style="padding:7px 14px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Save</button>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">OpenAI (ChatGPT) API Key</label>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="settings-openai-key" class="form-input" placeholder="sk-…" autocomplete="off" style="flex:1;font-size:13px">
+              <button onclick="saveApiKey('openai')" style="padding:7px 14px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Save</button>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">Groq API Key</label>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="settings-groq-key" class="form-input" placeholder="gsk_…" autocomplete="off" style="flex:1;font-size:13px">
+              <button onclick="saveApiKey('groq')" style="padding:7px 14px;border-radius:8px;border:1px solid var(--accent);background:rgba(108,99,255,0.1);color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Save</button>
+            </div>
+          </div>
+        </div>
+        <div id="settings-apikey-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
       </div>
 
       <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
@@ -640,9 +641,8 @@ a{color:inherit;text-decoration:none}
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
   clients: [], conversations: [], activeConvId: null,
-  activeClientId: null, quickCommands: [], uploads: [],
+  activeClientId: null, uploads: [],
   skills: [], metaConnected: false, googleConnected: false,
-  cmdSelectedIndex: -1,
 };
 
 // ── API helpers ────────────────────────────────────────────────────────────
@@ -693,7 +693,7 @@ async function connectWithToken() {
     try { data = JSON.parse(text); } catch { data = {}; }
     if (!r.ok) throw new Error(data.detail || r.statusText || 'Server error — check token and try again');
     showApp();
-    await Promise.all([loadClients(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage()]);
+    await Promise.all([loadClients(), loadConnectionStatus(), refreshApiUsage()]);
     toast('Connected as ' + (data.user_name || data.user_id), 'success');
   } catch(e) {
     err.textContent = e.message;
@@ -994,46 +994,11 @@ function autoResize(el) {
 }
 
 function handleKeydown(e) {
-  const dd = document.getElementById('cmd-dropdown');
-  if (dd.classList.contains('visible')) {
-    const items = dd.querySelectorAll('.cmd-item');
-    if (e.key === 'ArrowDown') { e.preventDefault(); state.cmdSelectedIndex=Math.min(state.cmdSelectedIndex+1,items.length-1); highlightCmd(items); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); state.cmdSelectedIndex=Math.max(state.cmdSelectedIndex-1,0); highlightCmd(items); return; }
-    if (e.key === 'Enter' && state.cmdSelectedIndex>=0) { e.preventDefault(); items[state.cmdSelectedIndex].click(); return; }
-    if (e.key === 'Escape') { dd.classList.remove('visible'); return; }
-  }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-}
-
-function highlightCmd(items) {
-  items.forEach((it,i)=>it.classList.toggle('selected',i===state.cmdSelectedIndex));
 }
 
 function handleInput(el) {
   document.getElementById('send-btn').disabled = !el.value.trim() || !state.activeConvId;
-  const val = el.value;
-  const dd = document.getElementById('cmd-dropdown');
-  if (val.startsWith('/')) {
-    const q = val.slice(1).toLowerCase();
-    const matches = state.quickCommands.filter(c=>c.trigger.toLowerCase().includes(q)||c.name.toLowerCase().includes(q));
-    if (matches.length) {
-      dd.innerHTML = matches.map((c,i)=>`<div class="cmd-item" onclick="insertCommand('${c.prompt_template.replace(/'/g,"\\'")}')">
-        <div class="cmd-trigger">${c.trigger}</div>
-        <div class="cmd-desc">${c.name}</div>
-      </div>`).join('');
-      dd.classList.add('visible');
-      state.cmdSelectedIndex = -1;
-    } else dd.classList.remove('visible');
-  } else dd.classList.remove('visible');
-}
-
-function insertCommand(template) {
-  const input = document.getElementById('chat-input');
-  input.value = template;
-  autoResize(input);
-  document.getElementById('cmd-dropdown').classList.remove('visible');
-  document.getElementById('send-btn').disabled = false;
-  input.focus();
 }
 
 // ── File uploads ───────────────────────────────────────────────────────────
@@ -1270,18 +1235,24 @@ async function deleteSkill(id) {
   loadSkills();
 }
 
-// ── Quick commands ──────────────────────────────────────────────────────────
-async function loadQuickCommands() {
-  const data = await api('GET', '/api/quick-commands');
-  if (!data) return;
-  state.quickCommands = data;
-  document.getElementById('commands-modal-list').innerHTML = data.map(c=>`
-    <div style="padding:10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius)">
-      <div style="display:flex;justify-content:space-between;align-items:start">
-        <div><span style="font-family:var(--font-mono);font-size:12px;color:var(--accent);font-weight:500">${c.trigger}</span> — <span style="font-size:12px;font-weight:500">${c.name}</span></div>
-      </div>
-      <div style="font-size:11px;color:var(--text-dim);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.prompt_template.slice(0,80)}…</div>
-    </div>`).join('');
+// ── API key save from Settings modal ───────────────────────────────────────
+async function saveApiKey(provider) {
+  const inputMap = { anthropic: 'settings-anthropic-key', openai: 'settings-openai-key', groq: 'settings-groq-key' };
+  const fieldMap = { anthropic: 'anthropic_api_key', openai: 'openai_api_key', groq: 'groq_api_key' };
+  const input = document.getElementById(inputMap[provider]);
+  const key = input.value.trim();
+  const status = document.getElementById('settings-apikey-status');
+  if (!key) { status.textContent = 'Please enter a key first.'; status.style.color = 'var(--error)'; return; }
+  status.textContent = 'Saving…'; status.style.color = 'var(--text-dim)';
+  try {
+    await api('POST', '/api/setup/save', { [fieldMap[provider]]: key });
+    input.value = '';
+    input.placeholder = '(already set — leave blank to keep)';
+    status.textContent = provider.charAt(0).toUpperCase() + provider.slice(1) + ' key saved.';
+    status.style.color = 'var(--success)';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+    toast(provider.charAt(0).toUpperCase() + provider.slice(1) + ' API key updated', 'success');
+  } catch(e) { status.textContent = 'Error: ' + e.message; status.style.color = 'var(--error)'; }
 }
 
 // ── Connections status ──────────────────────────────────────────────────────
@@ -1580,10 +1551,12 @@ function openModal(id) {
         document.getElementById('settings-meta-app-id').placeholder = set;
         document.getElementById('settings-meta-app-secret').placeholder = set;
       }
+      if (s.has_anthropic) document.getElementById('settings-anthropic-key').placeholder = set;
+      if (s.has_openai)    document.getElementById('settings-openai-key').placeholder = set;
+      if (s.has_groq)      document.getElementById('settings-groq-key').placeholder = set;
     }).catch(()=>{});
   }
   if (id === 'skills-modal') loadSkills();
-  if (id === 'commands-modal') loadQuickCommands();
   if (id === 'connections-modal') loadConnectionStatus();
 }
 
@@ -1624,7 +1597,7 @@ async function init() {
     const check = await fetch('/api/accounts/meta');
     if (check.status === 401) { showConnectScreen(); return; }
     showApp();
-    await Promise.allSettled([loadClients(), loadSkills(), loadQuickCommands(), loadConnectionStatus(), refreshApiUsage(), refreshAiUsage(), updateStatusIndicators(), loadAccountDropdowns(), loadProviderStatus()]);
+    await Promise.allSettled([loadClients(), loadSkills(), loadConnectionStatus(), refreshApiUsage(), refreshAiUsage(), updateStatusIndicators(), loadAccountDropdowns(), loadProviderStatus()]);
     // Refresh status every 30 seconds
     setInterval(updateStatusIndicators, 30000);
   } catch(e) { showConnectScreen(); }
