@@ -1504,24 +1504,34 @@ async function loadProviderStatus() {
 async function sidebarCheckUpdate() {
   const btn = document.getElementById('sidebar-update-btn');
   btn.textContent = '⬇ Checking...';
+  btn.style.color = '';
   try {
     const d = await api('GET', '/api/update/check');
-    if (d && d.has_update) {
-      btn.textContent = '⬇ Update Available!';
+    if (!d) { btn.textContent = '⬇ Check for Updates'; return; }
+
+    const local  = d.current_version  || '?';
+    const remote = d.latest_version   || '?';
+
+    if (d.fetch_error) {
+      btn.textContent = '⬇ Check for Updates';
+      toast('Could not reach GitHub: ' + d.fetch_error, 'error');
+      return;
+    }
+
+    if (d.has_update) {
+      btn.textContent = '⬇ Update: ' + local + ' → ' + remote;
       btn.style.color = '#34d399';
-      if (confirm('Update available (' + d.latest_version + '). Apply now?\n\nYour keys and database are preserved. You will need to restart after.')) {
+      if (confirm('Update available!\n\nInstalled: ' + local + '\nAvailable: ' + remote + '\n\nApply now? Your keys and database are preserved.\nYou will need to restart after.')) {
         btn.textContent = '⬇ Updating...';
         await api('POST', '/api/update/apply');
         btn.textContent = '⬇ Done — restart app';
         btn.style.color = '#34d399';
         toast('Update applied — please restart (close and run start.bat)', 'success');
-      } else {
-        btn.textContent = '⬇ Update Available';
       }
     } else {
-      btn.textContent = '✓ Up to date';
+      btn.textContent = '✓ Up to date (' + local + ')';
       btn.style.color = 'var(--text-dim)';
-      setTimeout(() => { btn.textContent = '⬇ Check for Updates'; btn.style.color = ''; }, 3000);
+      setTimeout(() => { btn.textContent = '⬇ Check for Updates'; btn.style.color = ''; }, 4000);
     }
   } catch(e) {
     btn.textContent = '⬇ Check for Updates';

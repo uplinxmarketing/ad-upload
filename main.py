@@ -1438,22 +1438,39 @@ async def update_check():
         local_version = version_file.read_text(encoding="utf-8").strip()
 
     latest_version = None
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://raw.githubusercontent.com/uplinxmarketing/ad-upload/main/version.txt",
-                follow_redirects=True,
-            )
-        if r.status_code == 200:
-            latest_version = r.text.strip()
-    except Exception:
-        pass
+    fetch_error = None
+    urls_tried = [
+        "https://raw.githubusercontent.com/uplinxmarketing/ad-upload/main/version.txt",
+        "https://api.github.com/repos/uplinxmarketing/ad-upload/contents/version.txt",
+    ]
+    for url in urls_tried:
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                headers = {"Accept": "application/vnd.github.raw+json"} if "api.github.com" in url else {}
+                r = await client.get(url, headers=headers)
+            logger.info("Update check %s -> status %d", url, r.status_code)
+            if r.status_code == 200:
+                text = r.text.strip()
+                # GitHub API returns JSON when Accept header not raw; parse if needed
+                if text.startswith("{"):
+                    import base64, json as _json
+                    content = _json.loads(text).get("content", "")
+                    text = base64.b64decode(content).decode().strip()
+                latest_version = text
+                fetch_error = None
+                break
+            else:
+                fetch_error = f"HTTP {r.status_code} from {url}"
+        except Exception as exc:
+            fetch_error = str(exc)
+            logger.warning("Update check fetch failed (%s): %s", url, exc)
 
     has_update = bool(latest_version and latest_version != local_version)
     return {
         "current_version": local_version,
-        "latest_version": latest_version or local_version,
+        "latest_version": latest_version or "unavailable",
         "has_update": has_update,
+        "fetch_error": fetch_error,
     }
 
 
