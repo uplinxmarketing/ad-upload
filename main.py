@@ -1358,6 +1358,34 @@ async def api_usage(request: Request, db: AsyncSession = Depends(get_db)):
     }
 
 
+@app.get("/api/ai-usage")
+async def api_ai_usage(request: Request, db: AsyncSession = Depends(get_db)):
+    """Return AI token usage: session totals (in-memory) + all-time DB total."""
+    from claude_agent import _ai_session_tokens
+    from sqlalchemy import func as sqlfunc
+
+    session = get_session(request)
+    uid = session.get("meta_user_id", "anon")
+
+    sess = _ai_session_tokens.get(uid, {})
+
+    # All-time total from DB (sum of tokens_used on assistant messages)
+    result = await db.execute(
+        select(sqlfunc.sum(Message.tokens_used)).where(Message.role == "assistant")
+    )
+    alltime_total: int = result.scalar() or 0
+
+    return {
+        "session_input":   sess.get("input", 0),
+        "session_output":  sess.get("output", 0),
+        "session_total":   sess.get("input", 0) + sess.get("output", 0),
+        "session_calls":   sess.get("calls", 0),
+        "provider":        sess.get("provider", agent._provider),
+        "model":           sess.get("model", agent.model),
+        "alltime_total":   alltime_total,
+    }
+
+
 # ── AI provider switcher ───────────────────────────────────────────────────────
 
 class SwitchProviderRequest(BaseModel):
