@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Uplinx Meta Manager — Windows Installer
+    Uplinx Meta Manager - Windows Installer
 .DESCRIPTION
     GUI installer: choose directory -> progress bar -> launch option.
-    Run via install.bat (which passes -Sta and captures errors to install_error.log).
+    Run via install.bat (passes -Sta and captures errors to install_error.log).
 #>
 
-# ── Logging setup (first thing — captures every error from line 1) ────────────
+# -- Logging (runs from line 1 to capture every error) -----------------------
 $LogFile = Join-Path $PSScriptRoot "install_error.log"
 function Write-Log($msg) {
     $line = "$(Get-Date -Format 'HH:mm:ss')  $msg"
@@ -15,49 +15,47 @@ function Write-Log($msg) {
 }
 
 Write-Log "installer.ps1 started"
-Write-Log "PSVersion: $($PSVersionTable.PSVersion)"
-Write-Log "OS: $([System.Environment]::OSVersion.VersionString)"
-Write-Log "STA: $([System.Threading.Thread]::CurrentThread.ApartmentState)"
-Write-Log "ScriptRoot: $PSScriptRoot"
+Write-Log ("PSVersion: " + $PSVersionTable.PSVersion)
+Write-Log ("OS: " + [System.Environment]::OSVersion.VersionString)
+Write-Log ("STA: " + [System.Threading.Thread]::CurrentThread.ApartmentState)
+Write-Log ("ScriptRoot: " + $PSScriptRoot)
 
-# ── Load Windows Forms ────────────────────────────────────────────────────────
-Write-Log "Loading Windows Forms…"
+# -- Load Windows Forms -------------------------------------------------------
+Write-Log "Loading Windows Forms..."
 try {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     Write-Log "Windows Forms loaded OK"
 } catch {
-    Write-Log "FATAL: Could not load Windows Forms: $_"
-    # Can't use MessageBox yet — write to log and exit
-    Add-Content -Path $LogFile -Value "Hint: run install.bat as Administrator, or check that .NET Framework 4.5+ is installed."
+    Write-Log ("FATAL: Could not load Windows Forms: " + $_)
     exit 1
 }
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config -------------------------------------------------------------------
 $AppName    = "Uplinx Meta Manager"
 $GithubZip  = "https://github.com/uplinxmarketing/ad-upload/archive/refs/heads/main.zip"
 $DefaultDir = "$env:LOCALAPPDATA\Uplinx"
 
-Write-Log "Config OK — DefaultDir=$DefaultDir"
+Write-Log ("Config OK -- DefaultDir=" + $DefaultDir)
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-function Set-Label($lbl, $text) { $lbl.Text = $text; $form.Refresh() }
+# -- Helpers ------------------------------------------------------------------
+function Set-Label($lbl, $text)  { $lbl.Text = $text; $form.Refresh() }
 function Set-Progress($bar, $pct) { $bar.Value = [Math]::Min($pct, 100); $form.Refresh() }
 
-# ── Colour palette ────────────────────────────────────────────────────────────
+# -- Colours ------------------------------------------------------------------
 $bgDark   = [System.Drawing.Color]::FromArgb(13,13,20)
 $accent   = [System.Drawing.Color]::FromArgb(108,99,255)
 $txtLight = [System.Drawing.Color]::FromArgb(232,232,240)
 $txtDim   = [System.Drawing.Color]::FromArgb(96,96,128)
 $green    = [System.Drawing.Color]::FromArgb(34,197,94)
 
-# ── Build form ────────────────────────────────────────────────────────────────
-Write-Log "Building form…"
+# -- Build form ---------------------------------------------------------------
+Write-Log "Building form..."
 try {
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text            = "$AppName — Installer"
+    $form.Text            = $AppName + " -- Installer"
     $form.Size            = New-Object System.Drawing.Size(520,380)
     $form.StartPosition   = "CenterScreen"
     $form.FormBorderStyle = "FixedSingle"
@@ -68,14 +66,14 @@ try {
 
     Write-Log "Form object created OK"
 } catch {
-    Write-Log "FATAL: Could not create form: $_"
+    Write-Log ("FATAL: Could not create form: " + $_)
     [System.Windows.Forms.MessageBox]::Show(
-        "Could not create installer window:`n`n$_`n`nSee install_error.log for details.",
+        "Could not create installer window:`n`n" + $_ + "`n`nSee install_error.log for details.",
         "Uplinx Installer", "OK", "Error")
     exit 1
 }
 
-# ── Panel helper ──────────────────────────────────────────────────────────────
+# -- UI helpers ---------------------------------------------------------------
 function New-Panel {
     $p = New-Object System.Windows.Forms.Panel
     $p.Dock      = "Fill"
@@ -87,10 +85,10 @@ function New-Panel {
 
 function New-Lbl($text, $x, $y, $w, $h, $size=10, $bold=$false, $color=$null) {
     $l = New-Object System.Windows.Forms.Label
-    $l.Text     = $text
-    $l.Location = New-Object System.Drawing.Point($x,$y)
-    $l.Size     = New-Object System.Drawing.Size($w,$h)
-    $l.Font     = New-Object System.Drawing.Font("Segoe UI", $size, $(if($bold){"Bold"}else{"Regular"}))
+    $l.Text      = $text
+    $l.Location  = New-Object System.Drawing.Point($x,$y)
+    $l.Size      = New-Object System.Drawing.Size($w,$h)
+    $l.Font      = New-Object System.Drawing.Font("Segoe UI", $size, $(if($bold){"Bold"}else{"Regular"}))
     $l.ForeColor = if($color){$color}else{$txtLight}
     $l
 }
@@ -109,26 +107,25 @@ function New-Btn($text, $x, $y, $w=120, $h=38) {
     $b
 }
 
-Write-Log "Building panels…"
+Write-Log "Building panels..."
 
-# ── Panel 1 — Welcome ─────────────────────────────────────────────────────────
+# == Panel 1 - Welcome ========================================================
 $pWelcome = New-Panel
 $pWelcome.Visible = $true
 
-$pWelcome.Controls.Add((New-Lbl "Uplinx Meta Manager" 40 60 440 38 18 $true))
+$pWelcome.Controls.Add((New-Lbl $AppName            40  60 440 38 18 $true))
 $pWelcome.Controls.Add((New-Lbl "AI-powered Meta advertising manager" 40 98 440 24 10 $false $txtDim))
-
 $pWelcome.Controls.Add((New-Lbl "This installer will:" 40 155 440 24 10 $true))
-$pWelcome.Controls.Add((New-Lbl "  * Download the latest version from GitHub" 40 180 440 22 10))
-$pWelcome.Controls.Add((New-Lbl "  * Set up Python and all dependencies automatically" 40 202 440 22 10))
-$pWelcome.Controls.Add((New-Lbl "  * Create a launch shortcut on your Desktop" 40 224 440 22 10))
-$pWelcome.Controls.Add((New-Lbl "Requirements: Windows 10+, Python 3.10+, internet" 40 268 440 20 9 $false $txtDim))
+$pWelcome.Controls.Add((New-Lbl "  * Download the latest version from GitHub"       40 180 440 22 10))
+$pWelcome.Controls.Add((New-Lbl "  * Set up Python and all dependencies"            40 202 440 22 10))
+$pWelcome.Controls.Add((New-Lbl "  * Create a launch shortcut on your Desktop"      40 224 440 22 10))
+$pWelcome.Controls.Add((New-Lbl "Requirements: Windows 10+, Python 3.10+, internet" 40 268 440 20  9 $false $txtDim))
 
 $btnWelcomeNext = New-Btn "Next ->" 370 305
 $pWelcome.Controls.Add($btnWelcomeNext)
 $btnWelcomeNext.Add_Click({ $pWelcome.Visible=$false; $pDir.Visible=$true })
 
-# ── Panel 2 — Directory ───────────────────────────────────────────────────────
+# == Panel 2 - Directory ======================================================
 $pDir = New-Panel
 
 $pDir.Controls.Add((New-Lbl "Choose Install Location" 40 50 440 32 16 $true))
@@ -180,7 +177,7 @@ $btnDirBack.Add_Click({ $pDir.Visible=$false; $pWelcome.Visible=$true })
 $btnInstall = New-Btn "Install" 370 305
 $pDir.Controls.Add($btnInstall)
 
-# ── Panel 3 — Progress ───────────────────────────────────────────────────────
+# == Panel 3 - Progress =======================================================
 $pProgress = New-Panel
 $pProgress.Controls.Add((New-Lbl "Installing..." 40 50 440 32 16 $true))
 
@@ -199,22 +196,21 @@ $lblLog = New-Lbl "" 40 165 430 120 9 $false $txtDim
 $lblLog.AutoSize = $false
 $pProgress.Controls.Add($lblLog)
 
-# ── Panel 4 — Finish ─────────────────────────────────────────────────────────
+# == Panel 4 - Finish =========================================================
 $pFinish = New-Panel
-$pFinish.Controls.Add((New-Lbl "Installation Complete!" 40 60 440 38 18 $true))
-$pFinish.Controls.Add((New-Lbl "Uplinx Meta Manager is ready to use." 40 98 440 24 10 $false $txtDim))
-
-$pFinish.Controls.Add((New-Lbl "Next steps:" 40 155 440 24 10 $true))
-$pFinish.Controls.Add((New-Lbl "  1. Launch the app - it will open in your browser" 40 180 440 22 10))
+$pFinish.Controls.Add((New-Lbl "Installation Complete!"              40  60 440 38 18 $true))
+$pFinish.Controls.Add((New-Lbl "Uplinx Meta Manager is ready to use." 40  98 440 24 10 $false $txtDim))
+$pFinish.Controls.Add((New-Lbl "Next steps:"                          40 155 440 24 10 $true))
+$pFinish.Controls.Add((New-Lbl "  1. Launch the app - opens in your browser" 40 180 440 22 10))
 $pFinish.Controls.Add((New-Lbl "  2. Enter your API keys in the Setup Wizard" 40 202 440 22 10))
-$pFinish.Controls.Add((New-Lbl "  3. Paste your Meta access token to connect" 40 224 440 22 10))
+$pFinish.Controls.Add((New-Lbl "  3. Paste your Meta access token to connect"  40 224 440 22 10))
 
 $btnLaunch = New-Btn "Launch App" 260 305 160
 $pFinish.Controls.Add($btnLaunch)
 $btnLaunch.Add_Click({
     $startBat = Join-Path $script:InstallDir "start.bat"
     if (Test-Path $startBat) { Start-Process $startBat }
-    else { [System.Windows.Forms.MessageBox]::Show("start.bat not found in $($script:InstallDir)") }
+    else { [System.Windows.Forms.MessageBox]::Show("start.bat not found in " + $script:InstallDir) }
     $form.Close()
 })
 
@@ -223,7 +219,7 @@ $btnClose.BackColor = [System.Drawing.Color]::FromArgb(37,37,64)
 $pFinish.Controls.Add($btnClose)
 $btnClose.Add_Click({ $form.Close() })
 
-# ── Install logic ─────────────────────────────────────────────────────────────
+# == Install logic ============================================================
 $script:InstallDir = $DefaultDir
 $script:JobDone    = $false
 $script:JobError   = $null
@@ -234,7 +230,7 @@ $timer.Interval = 200
 $timer.Add_Tick({
     while ($script:JobSteps.Count -gt 0) {
         $step = $script:JobSteps.Dequeue()
-        Set-Label  $lblStep $step.msg
+        Set-Label    $lblStep $step.msg
         Set-Progress $progBar $step.pct
         $lblLog.Text = $step.log
     }
@@ -243,7 +239,7 @@ $timer.Add_Tick({
         if ($script:JobError) {
             $pProgress.Visible = $false
             [System.Windows.Forms.MessageBox]::Show(
-                "Installation failed:`n`n$($script:JobError)`n`nSee install_error.log for details.",
+                "Installation failed:`n`n" + $script:JobError + "`n`nSee install_error.log for details.",
                 "Error", "OK", "Error")
             $form.Close()
         } else {
@@ -261,7 +257,7 @@ $btnInstall.Add_Click({
     $script:InstallDir = $txtDir.Text.Trim()
     $createShortcut    = $chkDesktop.Checked
     $logPath           = $LogFile
-    Write-Log "Install clicked — dir=$($script:InstallDir)"
+    Write-Log ("Install clicked -- dir=" + $script:InstallDir)
     $pDir.Visible      = $false
     $pProgress.Visible = $true
     $timer.Start()
@@ -270,34 +266,34 @@ $btnInstall.Add_Click({
         param($installDir, $createShortcut, $zipUrl, $logPath)
 
         function Log($msg) {
-            $line = "$(Get-Date -Format 'HH:mm:ss')  [job] $msg"
+            $line = "$(Get-Date -Format 'HH:mm:ss')  [job] " + $msg
             Add-Content -Path $logPath -Value $line -ErrorAction SilentlyContinue
         }
         function Emit($msg, $pct, $log="") {
-            Log "$msg ($pct%)"
-            [System.Console]::WriteLine("STEP|$pct|$msg|$log")
+            Log ($msg + " (" + $pct + "pct)")
+            [System.Console]::WriteLine("STEP|" + $pct + "|" + $msg + "|" + $log)
             [System.Console]::Out.Flush()
         }
 
-        Log "Job started — installDir=$installDir"
+        Log ("Job started -- installDir=" + $installDir)
 
         try {
-            # 1 — Create directory
+            # 1 -- Create directory
             Emit "Creating install directory..." 5
             New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-            # 2 — Download zip
-            Emit "Downloading from GitHub..." 10 "URL: $zipUrl"
+            # 2 -- Download zip
+            Emit "Downloading from GitHub..." 10 ("URL: " + $zipUrl)
             $zipPath = Join-Path $env:TEMP "uplinx_install.zip"
             Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
 
-            # 3 — Extract
+            # 3 -- Extract
             Emit "Extracting files..." 35
             $tmpDir = Join-Path $env:TEMP "uplinx_extracted"
             if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
             Expand-Archive -Force $zipPath $tmpDir
 
-            # 4 — Copy (preserve .env and DB)
+            # 4 -- Copy (preserve .env and DB)
             Emit "Copying files..." 50
             $srcDir = Join-Path $tmpDir "ad-upload-main"
             Get-ChildItem $srcDir | Where-Object {
@@ -306,55 +302,49 @@ $btnInstall.Add_Click({
             Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
             Remove-Item $tmpDir  -Recurse -Force -ErrorAction SilentlyContinue
 
-            # 5 — Find Python
+            # 5 -- Find Python
             Emit "Locating Python..." 60
             $py = $null
             foreach ($cmd in @("py","python","python3")) {
                 try {
                     $ver = & $cmd --version 2>&1
-                    Log "Tried $cmd -> $ver"
+                    Log ("Tried " + $cmd + " -> " + $ver)
                     if ($ver -match "Python 3\.(1[0-9]|[89])") { $py = $cmd; break }
-                } catch { Log "  error: $_" }
+                } catch { Log ("  error: " + $_) }
             }
-            if (-not $py) { throw "Python 3.10+ not found. Please install from python.org and tick 'Add Python to PATH'." }
-            Log "Using Python: $py"
+            if (-not $py) { throw "Python 3.10+ not found. Install from python.org and tick 'Add Python to PATH'." }
+            Log ("Using Python: " + $py)
 
-            # 6 — Create venv
-            Emit "Creating virtual environment..." 70 "Using: $py"
+            # 6 -- Create venv
+            Emit "Creating virtual environment..." 70 ("Using: " + $py)
             $venvPath = Join-Path $installDir "venv"
             if (-not (Test-Path $venvPath)) {
                 $result = & $py -m venv $venvPath 2>&1
-                Log "venv result: $result"
+                Log ("venv result: " + $result)
             }
 
-            # 7 — Install dependencies
+            # 7 -- Install dependencies
             Emit "Installing packages (1-2 min)..." 78
             $pip = Join-Path $venvPath "Scripts\pip.exe"
             $req = Join-Path $installDir "requirements.txt"
             if (Test-Path $req) {
                 $result = & $pip install -r $req --quiet 2>&1
-                Log "pip result: $result"
+                Log ("pip result: " + $result)
             }
 
-            # 8 — Create .env if missing
+            # 8 -- Create .env if missing
             Emit "Creating config file..." 92
             $envFile = Join-Path $installDir ".env"
             if (-not (Test-Path $envFile)) {
-                @"
-AI_PROVIDER=claude
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-GROQ_API_KEY=
-META_APP_ID=
-META_APP_SECRET=
-"@ | Set-Content $envFile -Encoding UTF8
+                $envContent = "AI_PROVIDER=claude`nANTHROPIC_API_KEY=`nOPENAI_API_KEY=`nGROQ_API_KEY=`nMETA_APP_ID=`nMETA_APP_SECRET=`n"
+                [System.IO.File]::WriteAllText($envFile, $envContent, [System.Text.Encoding]::UTF8)
             }
 
-            # 9 — Desktop shortcut
+            # 9 -- Desktop shortcut
             if ($createShortcut) {
                 Emit "Creating Desktop shortcut..." 95
                 $startBat = Join-Path $installDir "start.bat"
-                $lnkPath  = "$env:USERPROFILE\Desktop\Uplinx Meta Manager.lnk"
+                $lnkPath  = $env:USERPROFILE + "\Desktop\Uplinx Meta Manager.lnk"
                 $wsh = New-Object -ComObject WScript.Shell
                 $lnk = $wsh.CreateShortcut($lnkPath)
                 $lnk.TargetPath       = $startBat
@@ -362,14 +352,14 @@ META_APP_SECRET=
                 $lnk.Description      = "Uplinx Meta Manager"
                 $lnk.IconLocation     = "%SystemRoot%\System32\SHELL32.dll,14"
                 $lnk.Save()
-                Log "Shortcut created at $lnkPath"
+                Log ("Shortcut created at " + $lnkPath)
             }
 
             Emit "Done!" 100
             Log "Installation complete"
         } catch {
-            Log "INSTALL ERROR: $_"
-            [System.Console]::WriteLine("ERROR|$_")
+            Log ("INSTALL ERROR: " + $_)
+            [System.Console]::WriteLine("ERROR|" + $_)
             [System.Console]::Out.Flush()
         }
     } -ArgumentList $script:InstallDir, $createShortcut, $GithubZip, $logPath
@@ -409,15 +399,15 @@ META_APP_SECRET=
     $pollTimer.Start()
 })
 
-Write-Log "All panels built — showing form"
+Write-Log "All panels built -- showing form"
 
-# ── Show form ─────────────────────────────────────────────────────────────────
+# -- Show form ----------------------------------------------------------------
 try {
     $form.ShowDialog() | Out-Null
     Write-Log "Form closed normally"
 } catch {
-    Write-Log "FATAL: form crashed: $_"
+    Write-Log ("FATAL: form crashed: " + $_)
     [System.Windows.Forms.MessageBox]::Show(
-        "Installer crashed:`n`n$_`n`nSee install_error.log next to install.bat.",
+        "Installer crashed:`n`n" + $_ + "`n`nSee install_error.log next to install.bat.",
         "Uplinx Installer", "OK", "Error")
 }
