@@ -1110,13 +1110,16 @@ async function checkForUpdates() {
     const r2 = await fetch('/api/update/check?t=' + Date.now(), { cache: 'no-store' });
     const data = await r2.json();
     document.getElementById('update-current-ver').textContent = data.current_version || '—';
-    if (data.has_update) {
+    if (data.fetch_error) {
+      status.style.cssText = 'display:block;padding:12px;border-radius:8px;font-size:13px;margin-bottom:10px;background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.25)';
+      status.textContent = `✗ Could not reach GitHub: ${data.fetch_error}`;
+    } else if (data.has_update) {
       status.style.cssText = 'display:block;padding:12px;border-radius:8px;font-size:13px;margin-bottom:10px;background:rgba(52,211,153,0.1);color:#34d399;border:1px solid rgba(52,211,153,0.25)';
-      status.innerHTML = `⬆ New version available: <strong>${data.latest_version}</strong>`;
+      status.innerHTML = `⬆ New version available: <strong>${data.latest_version}</strong> (you have ${data.current_version})`;
       applyBtn.style.display = 'block';
     } else {
       status.style.cssText = 'display:block;padding:12px;border-radius:8px;font-size:13px;margin-bottom:10px;background:var(--bg-primary);color:var(--text-dim);border:1px solid var(--border)';
-      status.textContent = '✓ You are on the latest version.';
+      status.textContent = `✓ You are on the latest version (${data.current_version}).`;
     }
   } catch(e) {
     status.style.cssText = 'display:block;padding:12px;border-radius:8px;font-size:13px;margin-bottom:10px;background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.25)';
