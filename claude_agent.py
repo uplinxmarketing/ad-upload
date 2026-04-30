@@ -76,11 +76,27 @@ class ClaudeAgent:
         self._init_client()
 
     def _init_client(self) -> None:
-        """Initialise the correct client based on AI_PROVIDER setting."""
+        """Initialise the correct client based on AI_PROVIDER setting.
+
+        If the configured provider has no API key, auto-selects the first
+        provider that does have a key rather than initialising with an empty key.
+        """
         from config import settings
-        # Reload settings in case they changed at runtime
         self.settings = settings
-        provider = settings.AI_PROVIDER.lower()
+        requested = settings.AI_PROVIDER.lower()
+
+        key_map = {
+            "claude": bool(settings.ANTHROPIC_API_KEY),
+            "openai": bool(settings.OPENAI_API_KEY),
+            "groq":   bool(settings.GROQ_API_KEY),
+        }
+
+        # Only use the requested provider if it actually has a key
+        if key_map.get(requested):
+            provider = requested
+        else:
+            # Fall back to the first available provider
+            provider = next((p for p in ["groq", "openai", "claude"] if key_map[p]), requested)
 
         if provider == "openai":
             from openai import AsyncOpenAI

@@ -1406,11 +1406,16 @@ const PROVIDER_MODELS = {
   ],
 };
 let _selectedProvider = 'claude';
+let _providerAvailable = { claude: false, openai: false, groq: false };
 
 function selectProvider(p) {
+  if (!_providerAvailable[p]) {
+    const names = { claude: 'Claude (Anthropic)', openai: 'OpenAI (ChatGPT)', groq: 'Groq' };
+    toast(names[p] + ' — no API key configured. Add it in Settings first.', 'error');
+    return;
+  }
   _selectedProvider = p;
   const opts = (PROVIDER_MODELS[p] || []).map(m => `<option value="${m.id}">${m.label}</option>`).join('');
-  // Update both the settings modal dropdown and the panel dropdown
   const sel = document.getElementById('model-select');
   if (sel) sel.innerHTML = opts;
   const panelSel = document.getElementById('panel-model-select');
@@ -1421,20 +1426,27 @@ function selectProvider(p) {
 function highlightProviderBtn(provider) {
   ['claude','openai','groq'].forEach(p => {
     const accent = p === provider;
-    // Settings modal buttons
-    const btn = document.getElementById('btn-' + p);
-    if (btn) {
-      btn.style.borderColor = accent ? 'var(--accent)' : 'var(--border)';
-      btn.style.background  = accent ? 'rgba(108,99,255,0.12)' : 'var(--bg-primary)';
-      btn.style.color       = accent ? 'var(--accent)' : 'var(--text-secondary)';
-    }
-    // Panel buttons
-    const pBtn = document.getElementById('panel-btn-' + p);
-    if (pBtn) {
-      pBtn.style.borderColor = accent ? 'var(--accent)' : 'var(--border)';
-      pBtn.style.background  = accent ? 'rgba(108,99,255,0.12)' : 'var(--bg-primary)';
-      pBtn.style.color       = accent ? 'var(--accent)' : 'var(--text-secondary)';
-    }
+    const avail = _providerAvailable[p];
+    const ids = ['btn-' + p, 'panel-btn-' + p];
+    ids.forEach(id => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      if (!avail) {
+        btn.style.borderColor = 'var(--border)';
+        btn.style.background  = 'transparent';
+        btn.style.color       = 'var(--text-dim)';
+        btn.style.opacity     = '0.4';
+        btn.style.cursor      = 'not-allowed';
+        btn.title             = 'No API key configured';
+      } else {
+        btn.style.opacity     = '1';
+        btn.style.cursor      = 'pointer';
+        btn.title             = '';
+        btn.style.borderColor = accent ? 'var(--accent)' : 'var(--border)';
+        btn.style.background  = accent ? 'rgba(108,99,255,0.12)' : 'var(--bg-primary)';
+        btn.style.color       = accent ? 'var(--accent)' : 'var(--text-secondary)';
+      }
+    });
   });
 }
 
@@ -1463,10 +1475,14 @@ async function loadProviderStatus() {
   try {
     const d = await api('GET', '/api/ai-provider/current');
     if (!d) return;
-    selectProvider(d.provider);
-    // Sync both dropdowns to current model
+    // Update availability map before selectProvider so buttons render correctly
+    if (d.available) Object.assign(_providerAvailable, d.available);
+    // Force-set selected provider bypassing the key check (backend already validated)
+    _selectedProvider = d.provider;
+    const opts = (PROVIDER_MODELS[d.provider] || []).map(m => `<option value="${m.id}">${m.label}</option>`).join('');
     [document.getElementById('model-select'), document.getElementById('panel-model-select')]
-      .forEach(sel => { if (sel) sel.value = d.model; });
+      .forEach(sel => { if (sel) { sel.innerHTML = opts; sel.value = d.model; } });
+    highlightProviderBtn(d.provider);
     const providerName = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
     const status = `Active: ${providerName} — ${d.model}`;
     const el = document.getElementById('provider-status');
@@ -1521,6 +1537,8 @@ async function updateStatusIndicators() {
   try {
     const d = await api('GET', '/api/ai-provider/current');
     if (d) {
+      if (d.available) Object.assign(_providerAvailable, d.available);
+      highlightProviderBtn(_selectedProvider);
       const label = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
       const hasKey = d.available && d.available[d.provider];
       document.getElementById('status-ai-dot').style.background = hasKey ? '#22c55e' : '#f59e0b';
