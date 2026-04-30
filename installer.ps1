@@ -5,10 +5,18 @@
 .DESCRIPTION
     GUI installer: choose directory → progress bar install → launch option.
     Right-click this file and choose "Run with PowerShell" to start.
+    Must be run with PowerShell -Sta flag (Single-Threaded Apartment) for Windows Forms.
 #>
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+} catch {
+    [System.Windows.Forms.MessageBox]::Show(
+        "Could not load Windows Forms:`n`n$_`n`nMake sure you are running PowerShell 5+ on Windows 10 or later.",
+        "Uplinx Installer Error", "OK", "Error")
+    exit 1
+}
 
 # ── Config ────────────────────────────────────────────────────────────────────
 $AppName    = "Uplinx Meta Manager"
@@ -370,4 +378,11 @@ META_APP_SECRET=
 })
 
 # ── Show form ─────────────────────────────────────────────────────────────────
-$form.ShowDialog() | Out-Null
+try {
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    $form.ShowDialog() | Out-Null
+} catch {
+    [System.Windows.Forms.MessageBox]::Show(
+        "Installer error:`n`n$_",
+        "Uplinx Installer", "OK", "Error")
+}

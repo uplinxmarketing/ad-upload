@@ -1428,6 +1428,87 @@ async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
     logger.info("Switched AI provider to %s model=%s", req.provider, agent.model)
     return {"success": True, "provider": req.provider, "model": agent.model}
 
+@app.get("/api/update/check")
+async def update_check():
+    """Compare local version.txt with the latest on GitHub main."""
+    local_version = "unknown"
+    version_file = Path("version.txt")
+    if version_file.exists():
+        local_version = version_file.read_text(encoding="utf-8").strip()
+
+    latest_version = None
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://raw.githubusercontent.com/uplinxmarketing/ad-upload/main/version.txt",
+                follow_redirects=True,
+            )
+        if r.status_code == 200:
+            latest_version = r.text.strip()
+    except Exception:
+        pass
+
+    has_update = bool(latest_version and latest_version != local_version)
+    return {
+        "current_version": local_version,
+        "latest_version": latest_version or local_version,
+        "has_update": has_update,
+    }
+
+
+@app.post("/api/update/apply")
+async def update_apply():
+    """Download latest ZIP from GitHub, apply files, preserve .env and database."""
+    import shutil
+    import tempfile
+    import zipfile
+
+    zip_url = "https://github.com/uplinxmarketing/ad-upload/archive/refs/heads/main.zip"
+    preserve = {".env", "uplinx.db", "venv", "uploads", "logs", "skills",
+                "_update_dir", "_update_tmp.zip"}
+
+    try:
+        # 1. Download
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            r = await client.get(zip_url)
+        r.raise_for_status()
+
+        # 2. Extract to temp dir
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "update.zip"
+            zip_path.write_bytes(r.content)
+
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(tmp)
+
+            # GitHub zips contain a single top-level folder like "ad-upload-main"
+            extracted = [p for p in Path(tmp).iterdir() if p.is_dir()]
+            if not extracted:
+                raise RuntimeError("ZIP contained no top-level folder")
+            src = extracted[0]
+
+            # 3. Copy files, skipping preserved ones
+            app_root = Path(".")
+            for item in src.iterdir():
+                if item.name in preserve:
+                    continue
+                dest = app_root / item.name
+                if item.is_dir():
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+
+        return {
+            "success": True,
+            "message": "Update applied. Please restart the app — close this window and run start.bat again.",
+        }
+    except Exception as exc:
+        logger.error("Update failed: %s", exc, exc_info=True)
+        raise HTTPException(500, f"Update failed: {exc}")
+
+
 @app.get("/api/ai-provider/current")
 async def current_ai_provider(request: Request):
     return {
