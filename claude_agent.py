@@ -91,12 +91,18 @@ class ClaudeAgent:
             "groq":   bool(settings.GROQ_API_KEY),
         }
 
-        # Only use the requested provider if it actually has a key
+        # Pick provider: use requested if it has a key, else first available, else none
         if key_map.get(requested):
             provider = requested
         else:
-            # Fall back to the first available provider
-            provider = next((p for p in ["groq", "openai", "claude"] if key_map[p]), requested)
+            provider = next((p for p in ["groq", "openai", "claude"] if key_map[p]), None)
+
+        if provider is None:
+            # No API keys configured — stay idle until a key is added
+            self._provider = "none"
+            self.model = ""
+            self.max_tokens = 4096
+            return
 
         if provider == "openai":
             from openai import AsyncOpenAI

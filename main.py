@@ -1093,6 +1093,9 @@ async def api_update_context(conv_id: int, body: UpdateContextRequest, request: 
 @app.post("/api/chat/{conv_id}")
 @limiter.limit("60/minute")
 async def api_chat(conv_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    if agent._provider == "none":
+        raise HTTPException(400, "No AI provider configured — add an API key in Settings first")
+
     body = await request.json()
     message = sanitize_text(body.get("message", ""), 50000)
     if not message:
@@ -1539,14 +1542,15 @@ async def update_apply():
 
 @app.get("/api/ai-provider/current")
 async def current_ai_provider(request: Request):
+    available = {
+        "claude": bool(settings.ANTHROPIC_API_KEY),
+        "openai": bool(settings.OPENAI_API_KEY),
+        "groq":   bool(settings.GROQ_API_KEY),
+    }
     return {
-        "provider": agent._provider,
+        "provider": agent._provider,   # "none" when no keys configured
         "model": agent.model,
-        "available": {
-            "claude": bool(settings.ANTHROPIC_API_KEY),
-            "openai": bool(settings.OPENAI_API_KEY),
-            "groq": bool(settings.GROQ_API_KEY),
-        },
+        "available": available,
         "models": {
             "claude": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
             "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1"],
