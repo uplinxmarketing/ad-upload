@@ -1443,8 +1443,12 @@ async def switch_ai_provider(req: SwitchProviderRequest, request: Request):
     return {"success": True, "provider": req.provider, "model": agent.model}
 
 @app.get("/api/update/check")
-async def update_check():
+async def update_check(response: Response):
     """Compare local version.txt with the latest on GitHub main."""
+    # Never let browsers or proxies cache this — always fresh
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+
     local_version = "unknown"
     version_file = Path("version.txt")
     if version_file.exists():
@@ -1452,19 +1456,22 @@ async def update_check():
 
     latest_version = None
     fetch_error = None
+    import time as _time
+    cache_bust = int(_time.time())
     urls_tried = [
-        "https://raw.githubusercontent.com/uplinxmarketing/ad-upload/main/version.txt",
+        f"https://raw.githubusercontent.com/uplinxmarketing/ad-upload/main/version.txt?t={cache_bust}",
         "https://api.github.com/repos/uplinxmarketing/ad-upload/contents/version.txt",
     ]
     for url in urls_tried:
         try:
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                headers = {"Accept": "application/vnd.github.raw+json"} if "api.github.com" in url else {}
+                headers = {"Cache-Control": "no-cache"}
+                if "api.github.com" in url:
+                    headers["Accept"] = "application/vnd.github.raw+json"
                 r = await client.get(url, headers=headers)
-            logger.info("Update check %s -> status %d", url, r.status_code)
+            logger.info("Update check %s -> status %d body=%r", url, r.status_code, r.text[:80])
             if r.status_code == 200:
                 text = r.text.strip()
-                # GitHub API returns JSON when Accept header not raw; parse if needed
                 if text.startswith("{"):
                     import base64, json as _json
                     content = _json.loads(text).get("content", "")
@@ -1479,6 +1486,7 @@ async def update_check():
             logger.warning("Update check fetch failed (%s): %s", url, exc)
 
     has_update = bool(latest_version and latest_version != local_version)
+    logger.info("Update check result: local=%r github=%r has_update=%s", local_version, latest_version, has_update)
     return {
         "current_version": local_version,
         "latest_version": latest_version or "unavailable",

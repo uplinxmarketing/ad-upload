@@ -1107,7 +1107,8 @@ async function checkForUpdates() {
   applyBtn.style.display = 'none';
 
   try {
-    const data = await api('GET', '/api/update/check');
+    const r2 = await fetch('/api/update/check?t=' + Date.now(), { cache: 'no-store' });
+    const data = await r2.json();
     document.getElementById('update-current-ver').textContent = data.current_version || '—';
     if (data.has_update) {
       status.style.cssText = 'display:block;padding:12px;border-radius:8px;font-size:13px;margin-bottom:10px;background:rgba(52,211,153,0.1);color:#34d399;border:1px solid rgba(52,211,153,0.25)';
@@ -1503,7 +1504,10 @@ async function sidebarCheckUpdate() {
   btn.textContent = '⬇ Checking...';
   btn.style.color = '';
   try {
-    const d = await api('GET', '/api/update/check');
+    // Cache-bust so the browser never serves a stale response
+    const r = await fetch('/api/update/check?t=' + Date.now(), { cache: 'no-store' });
+    if (r.status === 401) { btn.textContent = '⬇ Check for Updates'; return; }
+    const d = await r.json();
     if (!d) { btn.textContent = '⬇ Check for Updates'; return; }
 
     const local  = d.current_version  || '?';
