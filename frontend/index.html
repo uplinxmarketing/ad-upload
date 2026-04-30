@@ -1378,7 +1378,7 @@ async function saveMetaCredentials() {
   const appId = document.getElementById('settings-meta-app-id').value.trim();
   const appSecret = document.getElementById('settings-meta-app-secret').value.trim();
   const status = document.getElementById('settings-meta-status');
-  if (!appId && !appSecret) { status.textContent = 'Enter at least one value'; status.style.color='var(--warning)'; return; }
+  if (!appId && !appSecret) { status.textContent = 'Enter App ID and/or Secret to update'; status.style.color='var(--warning)'; return; }
   status.textContent = 'Saving…'; status.style.color = 'var(--text-dim)';
   try {
     await api('POST', '/api/setup/save', { meta_app_id: appId, meta_app_secret: appSecret });
@@ -1494,6 +1494,14 @@ function openModal(id) {
     loadProviderStatus();
     api('GET', '/api/update/check').then(d => {
       if (d) document.getElementById('update-current-ver').textContent = d.current_version || '—';
+    }).catch(()=>{});
+    api('GET', '/api/setup/status').then(s => {
+      if (!s) return;
+      const set = '(already set — leave blank to keep)';
+      if (s.has_meta) {
+        document.getElementById('settings-meta-app-id').placeholder = set;
+        document.getElementById('settings-meta-app-secret').placeholder = set;
+      }
     }).catch(()=>{});
   }
   if (id === 'skills-modal') loadSkills();

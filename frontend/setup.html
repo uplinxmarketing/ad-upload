@@ -436,12 +436,20 @@
     }
   }
 
-  // Pre-fill form from current settings
+  // Pre-fill placeholders from current settings (never expose keys to the browser)
   fetch('/api/setup/status').then(r => r.json()).then(s => {
     if (s.ai_provider) selectProvider(s.ai_provider);
+    const set = '(already set — leave blank to keep)';
     if (s.has_meta) {
-      document.getElementById('meta_app_id').placeholder = '(already set)';
-      document.getElementById('meta_app_secret').placeholder = '(already set)';
+      document.getElementById('meta_app_id').placeholder = set;
+      document.getElementById('meta_app_secret').placeholder = set;
+    }
+    if (s.has_anthropic) document.getElementById('anthropic_api_key').placeholder = set;
+    if (s.has_openai)    document.getElementById('openai_api_key').placeholder = set;
+    if (s.has_groq)      document.getElementById('groq_api_key').placeholder = set;
+    if (s.has_google) {
+      document.getElementById('google_client_id').placeholder = set;
+      document.getElementById('google_client_secret').placeholder = set;
     }
   }).catch(() => {});
 </script>

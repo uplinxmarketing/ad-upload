@@ -354,7 +354,8 @@ async def setup_save(req: SetupSaveRequest):
         "GOOGLE_CLIENT_SECRET": req.google_client_secret,
     }
     for key, value in pairs.items():
-        lines = _set_key(lines, key, value)
+        if value:  # never overwrite an existing key with an empty string
+            lines = _set_key(lines, key, value)
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
