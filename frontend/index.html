@@ -696,7 +696,7 @@ async function connectWithToken() {
     try { data = JSON.parse(text); } catch { data = {}; }
     if (!r.ok) throw new Error(data.detail || r.statusText || 'Server error — check token and try again');
     showApp();
-    await Promise.all([loadClients(), loadConnectionStatus(), refreshApiUsage()]);
+    await Promise.all([loadClients(), loadConnectionStatus(), refreshApiUsage(), loadProviderStatus(), updateStatusIndicators()]);
     toast('Connected as ' + (data.user_name || data.user_id), 'success');
   } catch(e) {
     err.textContent = e.message;
@@ -860,7 +860,6 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text || !state.activeConvId) return;
   input.value = ''; autoResize(input);
-  document.getElementById('cmd-dropdown').classList.remove('visible');
   appendMessage('user', text);
   _setSendState(true);
   const typing = addTypingIndicator();
@@ -1538,7 +1537,9 @@ async function updateStatusIndicators() {
     const d = await api('GET', '/api/ai-provider/current');
     if (d) {
       if (d.available) Object.assign(_providerAvailable, d.available);
-      highlightProviderBtn(_selectedProvider);
+      // Always sync _selectedProvider to what the backend is actually using
+      _selectedProvider = d.provider;
+      highlightProviderBtn(d.provider);
       const label = d.provider === 'claude' ? 'Claude' : d.provider === 'openai' ? 'ChatGPT' : 'Groq';
       const hasKey = d.available && d.available[d.provider];
       document.getElementById('status-ai-dot').style.background = hasKey ? '#22c55e' : '#f59e0b';
