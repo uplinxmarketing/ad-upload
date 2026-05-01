@@ -25,6 +25,16 @@ logger = logging.getLogger("uplinx")
 _account_cache: dict[str, dict] = {}
 _ACCOUNT_CACHE_TTL = 600  # 10 minutes
 
+# Cache for the fully-built system prompt, keyed by conversation_id.
+# Rebuilt only when context or skills change; safe to keep for the length
+# of a session because Anthropic's server-side prompt cache also lasts 5 min.
+_system_prompt_cache: dict[int, str] = {}
+
+
+def invalidate_system_prompt(conversation_id: int) -> None:
+    """Call whenever the conversation context or skills change."""
+    _system_prompt_cache.pop(conversation_id, None)
+
 
 async def _get_cached_meta_accounts(uid: str, token: str) -> dict:
     """Return cached ad accounts + pages, refreshing only when stale."""
@@ -230,6 +240,25 @@ class ClaudeAgent:
         db: AsyncSession,
         session_data: Optional[dict] = None,
     ) -> str:
+        """Return the system prompt, using an in-memory cache to avoid
+        rebuilding it on every turn (context/skills rarely change mid-chat).
+        Call invalidate_system_prompt(conv_id) whenever context or skills change.
+        """
+        if conversation_id in _system_prompt_cache:
+            return _system_prompt_cache[conversation_id]
+        prompt = await self._build_system_prompt_uncached(
+            conversation_id, client_id, db, session_data
+        )
+        _system_prompt_cache[conversation_id] = prompt
+        return prompt
+
+    async def _build_system_prompt_uncached(
+        self,
+        conversation_id: int,
+        client_id: Optional[int],
+        db: AsyncSession,
+        session_data: Optional[dict] = None,
+    ) -> str:
         """Build the full system prompt with pre-loaded account context.
 
         Loads ad accounts, pages, and pixels directly into the prompt so the
@@ -403,7 +432,7 @@ class ClaudeAgent:
         # 2. Load history
         try:
             history = await self.get_conversation_messages(
-                conversation_id, db, limit=20
+                conversation_id, db, limit=10
             )
         except Exception as exc:
             logger.error("Failed to load conversation history: %s", exc)

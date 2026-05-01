@@ -47,7 +47,7 @@ from skills_manager import (
     get_all_skills, create_skill, update_skill,
     toggle_skill, delete_skill, get_quick_commands, create_quick_command
 )
-from claude_agent import ClaudeAgent, invalidate_account_cache
+from claude_agent import ClaudeAgent, invalidate_account_cache, invalidate_system_prompt, _system_prompt_cache
 from rate_limiter import api_tracker
 
 logger = setup_logging()
@@ -1111,6 +1111,7 @@ async def api_update_context(conv_id: int, body: UpdateContextRequest, request: 
         ctx.overrides = body.overrides
     ctx.updated_at = datetime.utcnow()
     await db.commit()
+    invalidate_system_prompt(conv_id)
     return {"success": True}
 
 
@@ -1219,6 +1220,7 @@ async def api_create_skill(body: CreateSkillRequest, request: Request, db: Async
     )
     if not result.get("success"):
         raise HTTPException(500, result.get("error", "Failed to create skill"))
+    _system_prompt_cache.clear()
     return result
 
 
@@ -1227,6 +1229,7 @@ async def api_update_skill(skill_id: int, body: UpdateSkillRequest, request: Req
     result = await update_skill(skill_id, body.content, db)
     if not result.get("success"):
         raise HTTPException(500, result.get("error", "Failed to update skill"))
+    _system_prompt_cache.clear()
     return result
 
 
@@ -1235,12 +1238,14 @@ async def api_toggle_skill(skill_id: int, request: Request, db: AsyncSession = D
     body = await request.json()
     is_active = body.get("is_active", True)
     result = await toggle_skill(skill_id, is_active, db)
+    _system_prompt_cache.clear()
     return result
 
 
 @app.delete("/api/skills/{skill_id}")
 async def api_delete_skill(skill_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     result = await delete_skill(skill_id, db)
+    _system_prompt_cache.clear()
     return result
 
 
