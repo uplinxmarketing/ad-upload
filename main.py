@@ -411,6 +411,40 @@ async def clear_api_key(provider: str):
     return {"success": True}
 
 
+_USER_SETTINGS_FILE = Path("user_settings.json")
+
+
+def _load_user_settings() -> dict:
+    if _USER_SETTINGS_FILE.exists():
+        try:
+            import json as _json
+            return _json.loads(_USER_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_user_settings(data: dict) -> None:
+    import json as _json
+    existing = _load_user_settings()
+    existing.update(data)
+    _USER_SETTINGS_FILE.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+
+
+@app.get("/api/setup/user-settings")
+async def get_user_settings():
+    return _load_user_settings()
+
+
+@app.post("/api/setup/user-settings")
+async def save_user_settings(request: Request):
+    body = await request.json()
+    _save_user_settings(body)
+    # Custom instructions are part of the system prompt — bust cache
+    _system_prompt_cache.clear()
+    return {"success": True}
+
+
 @app.get("/api/setup/status")
 async def setup_status():
     return {
@@ -1534,8 +1568,8 @@ async def update_apply():
     import zipfile
 
     zip_url = "https://github.com/uplinxmarketing/ad-upload/archive/refs/heads/main.zip"
-    preserve = {".env", "uplinx.db", "venv", "uploads", "logs", "skills",
-                "_update_dir", "_update_tmp.zip"}
+    preserve = {".env", "uplinx.db", "user_settings.json", "venv", "uploads",
+                "logs", "skills", "_update_dir", "_update_tmp.zip"}
 
     try:
         # 1. Download
