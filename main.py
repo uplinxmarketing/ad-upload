@@ -47,7 +47,7 @@ from skills_manager import (
     get_all_skills, create_skill, update_skill,
     toggle_skill, delete_skill, get_quick_commands, create_quick_command
 )
-from claude_agent import ClaudeAgent
+from claude_agent import ClaudeAgent, invalidate_account_cache
 from rate_limiter import api_tracker
 
 logger = setup_logging()
@@ -795,10 +795,12 @@ async def api_disconnect_google(account_id: int, request: Request, db: AsyncSess
 @app.get("/api/meta/ad-accounts")
 async def api_ad_accounts(request: Request, db: AsyncSession = Depends(get_db)):
     token = await get_meta_token(request, db)
+    uid = get_session(request).get("meta_user_id", "anon")
+    # Bust the agent's account cache so next chat turn gets fresh data
+    invalidate_account_cache(uid)
     result = await meta_api.get_ad_accounts(token)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
-    uid = get_session(request).get("meta_user_id", "anon")
     await api_tracker.record_call(uid)
     return result["data"]
 
@@ -806,10 +808,11 @@ async def api_ad_accounts(request: Request, db: AsyncSession = Depends(get_db)):
 @app.get("/api/meta/pages")
 async def api_pages(request: Request, db: AsyncSession = Depends(get_db)):
     token = await get_meta_token(request, db)
+    uid = get_session(request).get("meta_user_id", "anon")
+    invalidate_account_cache(uid)
     result = await meta_api.get_pages(token)
     if not result.get("success"):
         raise HTTPException(502, result.get("error", "Meta API error"))
-    uid = get_session(request).get("meta_user_id", "anon")
     await api_tracker.record_call(uid)
     return result["data"]
 
