@@ -388,6 +388,29 @@ async def setup_save(req: SetupSaveRequest):
 
     return {"success": True, "message": "Settings saved."}
 
+
+@app.delete("/api/setup/key/{provider}")
+async def clear_api_key(provider: str):
+    """Remove a single AI provider key from .env and live settings."""
+    env_key_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "groq": "GROQ_API_KEY"}
+    env_key = env_key_map.get(provider)
+    if not env_key:
+        raise HTTPException(400, f"Unknown provider: {provider}")
+    env_path = Path(".env")
+    if env_path.exists():
+        lines = [l for l in env_path.read_text(encoding="utf-8").splitlines()
+                 if not (l.startswith(f"{env_key}=") or l.startswith(f"{env_key} ="))]
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if provider == "anthropic":
+        settings.ANTHROPIC_API_KEY = ""
+    elif provider == "openai":
+        settings.OPENAI_API_KEY = ""
+    elif provider == "groq":
+        settings.GROQ_API_KEY = ""
+    agent._init_client()
+    return {"success": True}
+
+
 @app.get("/api/setup/status")
 async def setup_status():
     return {
