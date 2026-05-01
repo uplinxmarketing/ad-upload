@@ -430,12 +430,17 @@ class ClaudeAgent:
 
                 if self._provider == "claude":
                     # ── Claude (Anthropic) streaming ──────────────────────────
+                    # System prompt cached so subsequent turns in the same
+                    # conversation pay ~10% of the normal input token price.
+                    cached_system = [{"type": "text", "text": system_prompt,
+                                      "cache_control": {"type": "ephemeral"}}]
                     async with self.client.messages.stream(
                         model=self.model,
                         max_tokens=self.max_tokens,
-                        system=system_prompt,
+                        system=cached_system,
                         messages=messages,
                         tools=tool_definitions,
+                        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
                     ) as stream:
                         current_tool_id: Optional[str] = None
                         current_tool_name: Optional[str] = None
