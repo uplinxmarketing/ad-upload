@@ -14,6 +14,7 @@ import logging
 from typing import AsyncGenerator, Optional, Any
 
 import time
+from pathlib import Path
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -271,6 +272,21 @@ class ClaudeAgent:
         from security import FernetEncryption
 
         parts: list[str] = [BASE_SYSTEM_PROMPT]
+
+        # ── 0. Custom instructions (user-defined, highest priority) ───────────
+        try:
+            import json as _json
+            _us_file = Path("user_settings.json")
+            if _us_file.exists():
+                _us = _json.loads(_us_file.read_text(encoding="utf-8"))
+                _custom = (_us.get("custom_instructions") or "").strip()
+                if _custom:
+                    parts.append(
+                        "\n## Custom Instructions (follow these above all else)\n"
+                        + _custom
+                    )
+        except Exception:
+            pass
 
         # ── 1. Active conversation context ────────────────────────────────
         ctx_result = await db.execute(

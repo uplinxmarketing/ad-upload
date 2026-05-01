@@ -619,6 +619,23 @@ a{color:inherit;text-decoration:none}
 
       <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
 
+      <!-- Custom Instructions -->
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:6px">Custom Instructions</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">Tell the AI how to behave, what tone to use, or add any context it should always know. These are injected into every conversation above all other instructions.</div>
+        <textarea id="settings-custom-instructions"
+          placeholder="Examples:&#10;- Always respond in English, even if I write in another language&#10;- Keep responses concise and bullet-pointed&#10;- I work with e-commerce brands — budgets are usually small&#10;- Never suggest broad audiences; I prefer tight interest targeting"
+          style="width:100%;min-height:120px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:inherit;resize:vertical;outline:none;box-sizing:border-box;line-height:1.5"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+          <button onclick="saveCustomInstructions()" style="padding:8px 16px;border-radius:8px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer;border:none">Save Instructions</button>
+          <button onclick="clearCustomInstructions()" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-dim);font-size:13px;cursor:pointer">Clear</button>
+          <span id="settings-ci-status" style="font-size:12px;color:var(--text-dim)"></span>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
       <!-- Software Update -->
       <div style="margin-bottom:16px">
         <div style="font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px">Software Update</div>
@@ -1276,6 +1293,34 @@ async function saveApiKey(provider) {
   } catch(e) { status.textContent = 'Error: ' + e.message; status.style.color = 'var(--error)'; }
 }
 
+// ── Custom Instructions ────────────────────────────────────────────────────
+async function loadCustomInstructions() {
+  try {
+    const d = await api('GET', '/api/setup/user-settings');
+    if (d) document.getElementById('settings-custom-instructions').value = d.custom_instructions || '';
+  } catch(e) {}
+}
+
+async function saveCustomInstructions() {
+  const text = document.getElementById('settings-custom-instructions').value.trim();
+  const status = document.getElementById('settings-ci-status');
+  status.textContent = 'Saving…'; status.style.color = 'var(--text-dim)';
+  try {
+    await api('POST', '/api/setup/user-settings', { custom_instructions: text });
+    status.textContent = '✓ Saved — active from next message';
+    status.style.color = 'var(--success)';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+    toast('Custom instructions saved', 'success');
+  } catch(e) { status.textContent = 'Error: ' + e.message; status.style.color = 'var(--error)'; }
+}
+
+async function clearCustomInstructions() {
+  if (!document.getElementById('settings-custom-instructions').value.trim()) return;
+  if (!confirm('Clear all custom instructions?')) return;
+  document.getElementById('settings-custom-instructions').value = '';
+  await saveCustomInstructions();
+}
+
 async function clearApiKey(provider) {
   if (!confirm('Remove the ' + provider + ' API key? The provider will become unavailable until you add a new key.')) return;
   const inputMap = { anthropic: 'settings-anthropic-key', openai: 'settings-openai-key', groq: 'settings-groq-key' };
@@ -1613,6 +1658,7 @@ function openModal(id) {
   document.getElementById(id).classList.add('open');
   if (id === 'settings-modal') {
     loadProviderStatus();
+    loadCustomInstructions();
     api('GET', '/api/update/check?t=' + Date.now()).then(d => {
       if (d) document.getElementById('update-current-ver').textContent = d.current_version || '—';
     }).catch(()=>{});
