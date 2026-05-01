@@ -13,11 +13,39 @@ import json
 import logging
 from typing import AsyncGenerator, Optional, Any
 
+import time
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 logger = logging.getLogger("uplinx")
+
+# In-memory cache for Meta account/page lists keyed by meta_user_id.
+# Avoids hitting the Graph API on every single chat message.
+_account_cache: dict[str, dict] = {}
+_ACCOUNT_CACHE_TTL = 600  # 10 minutes
+
+
+async def _get_cached_meta_accounts(uid: str, token: str) -> dict:
+    """Return cached ad accounts + pages, refreshing only when stale."""
+    import meta_api as _meta_api
+    now = time.monotonic()
+    entry = _account_cache.get(uid)
+    if entry and now - entry["ts"] < _ACCOUNT_CACHE_TTL:
+        return entry["data"]
+    ad_result = await _meta_api.get_ad_accounts(token)
+    page_result = await _meta_api.get_pages(token)
+    data = {
+        "ad_accounts": ad_result["data"].get("data", []) if ad_result.get("success") else [],
+        "pages": page_result["data"].get("data", []) if page_result.get("success") else [],
+    }
+    _account_cache[uid] = {"data": data, "ts": now}
+    return data
+
+
+def invalidate_account_cache(uid: str) -> None:
+    """Call this after the user explicitly refreshes assets."""
+    _account_cache.pop(uid, None)
 
 BASE_SYSTEM_PROMPT = """You are Uplinx — an expert Meta Ads manager and strategist \
 built into a web app. You have deep knowledge of Facebook and Instagram advertising, \
@@ -249,12 +277,19 @@ class ClaudeAgent:
                          "The user should select one from the right panel, or you can list "
                          "available accounts from the Available Accounts section below.")
 
-        # ── 2. Pre-load all available accounts from Meta API ──────────────
-        # This is the key improvement: inject the full account list so the AI
-        # never needs to call list_ad_accounts / list_pages on its own.
+        # ── 2. Available accounts (cached, skipped when context is set) ───────
+        # Only inject the full account list when no ad account is selected yet.
+        # When the user has a context set, the AI already has the IDs it needs
+        # above — fetching the full list every message wastes Meta API quota
+        # and adds latency.  When we do fetch, results are cached for 10 min.
+        context_complete = (
+            ctx is not None
+            and ctx.selected_ad_account_id
+            and ctx.selected_page_id
+        )
         try:
             uid = (session_data or {}).get("meta_user_id", "")
-            if uid:
+            if uid and not context_complete:
                 enc = FernetEncryption()
                 acc_result = await db.execute(
                     select(ConnectedMetaAccount).where(
@@ -265,35 +300,27 @@ class ClaudeAgent:
                 meta_acc = acc_result.scalar_one_or_none()
                 if meta_acc:
                     token = enc.decrypt(meta_acc.encrypted_long_token)
+                    cached = await _get_cached_meta_accounts(uid, token)
                     account_lines: list[str] = [
                         f"Connected as: {meta_acc.user_name or uid}"
                     ]
-
-                    # Ad accounts
-                    ad_result = await meta_api.get_ad_accounts(token)
-                    if ad_result.get("success"):
-                        accounts = ad_result["data"].get("data", [])
-                        if accounts:
-                            account_lines.append("\n**Ad Accounts:**")
-                            for a in accounts[:30]:  # cap at 30
-                                account_lines.append(
-                                    f"  - {a.get('name', a.get('account_id', '?'))} "
-                                    f"| ID: {a.get('id','?')} "
-                                    f"| Currency: {a.get('currency','?')} "
-                                    f"| Timezone: {a.get('timezone_name','?')}"
-                                )
-
-                    # Pages
-                    page_result = await meta_api.get_pages(token)
-                    if page_result.get("success"):
-                        pages = page_result["data"].get("data", [])
-                        if pages:
-                            account_lines.append("\n**Facebook Pages:**")
-                            for p in pages[:20]:
-                                account_lines.append(
-                                    f"  - {p.get('name','?')} | ID: {p.get('id','?')}"
-                                )
-
+                    accounts = cached["ad_accounts"]
+                    if accounts:
+                        account_lines.append("\n**Ad Accounts:**")
+                        for a in accounts[:30]:
+                            account_lines.append(
+                                f"  - {a.get('name', a.get('account_id', '?'))} "
+                                f"| ID: {a.get('id','?')} "
+                                f"| Currency: {a.get('currency','?')} "
+                                f"| Timezone: {a.get('timezone_name','?')}"
+                            )
+                    pages = cached["pages"]
+                    if pages:
+                        account_lines.append("\n**Facebook Pages:**")
+                        for p in pages[:20]:
+                            account_lines.append(
+                                f"  - {p.get('name','?')} | ID: {p.get('id','?')}"
+                            )
                     parts.append("\n## Available Accounts\n" + "\n".join(account_lines))
         except Exception as exc:
             logger.debug("Could not pre-load account list into prompt: %s", exc)
