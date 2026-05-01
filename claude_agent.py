@@ -958,9 +958,8 @@ class ClaudeAgent:
                         },
                         "status": {
                             "type": "string",
-                            "description": "Initial campaign status.",
+                            "description": "Initial campaign status. Default: ACTIVE.",
                             "enum": ["ACTIVE", "PAUSED"],
-                            "default": "ACTIVE",
                         },
                         "daily_budget": {
                             "type": "number",
@@ -990,8 +989,7 @@ class ClaudeAgent:
                         },
                         "status_filter": {
                             "type": "string",
-                            "description": "Filter by status: ACTIVE, PAUSED, ARCHIVED, or ALL.",
-                            "default": "ALL",
+                            "description": "Filter by status: ACTIVE, PAUSED, ARCHIVED, or ALL. Default: ALL.",
                         },
                     },
                     "required": ["ad_account_id"],
@@ -1084,7 +1082,6 @@ class ClaudeAgent:
                         "billing_event": {
                             "type": "string",
                             "description": "Billing event, e.g. IMPRESSIONS.",
-                            "default": "IMPRESSIONS",
                         },
                         "pixel_id": {
                             "type": "string",
@@ -1145,7 +1142,6 @@ class ClaudeAgent:
                         "call_to_action": {
                             "type": "string",
                             "description": "CTA button type, e.g. SHOP_NOW, LEARN_MORE.",
-                            "default": "SHOP_NOW",
                         },
                         "page_id": {
                             "type": "string",
@@ -1163,7 +1159,6 @@ class ClaudeAgent:
                             "type": "string",
                             "description": "Placement hint: 'feed' or 'story'.",
                             "enum": ["feed", "story"],
-                            "default": "feed",
                         },
                     },
                     "required": [
@@ -1248,7 +1243,6 @@ class ClaudeAgent:
                                 "Date range preset. Options: last_7d, last_14d, "
                                 "last_30d, this_month, last_month."
                             ),
-                            "default": "last_7d",
                         },
                         "since": {
                             "type": "string",
@@ -1282,7 +1276,6 @@ class ClaudeAgent:
                         "date_preset": {
                             "type": "string",
                             "description": "Date range preset (last_7d, last_14d, last_30d, etc.).",
-                            "default": "last_7d",
                         },
                         "since": {
                             "type": "string",
@@ -1329,14 +1322,12 @@ class ClaudeAgent:
                         },
                         "platform": {
                             "type": "string",
-                            "description": "Target platform.",
+                            "description": "Target platform. Default: both.",
                             "enum": ["facebook", "instagram", "both"],
-                            "default": "both",
                         },
                         "timezone": {
                             "type": "string",
-                            "description": "Timezone name for the scheduled time, e.g. 'Europe/Madrid'.",
-                            "default": "UTC",
+                            "description": "Timezone name for the scheduled time, e.g. 'Europe/Madrid'. Default: UTC.",
                         },
                     },
                     "required": ["image_path", "caption", "scheduled_time"],
@@ -1373,12 +1364,10 @@ class ClaudeAgent:
                         "platform": {
                             "type": "string",
                             "enum": ["facebook", "instagram", "both"],
-                            "default": "both",
                         },
                         "timezone": {
                             "type": "string",
                             "description": "Timezone name.",
-                            "default": "UTC",
                         },
                     },
                     "required": ["video_path", "caption", "scheduled_time"],
@@ -1400,7 +1389,6 @@ class ClaudeAgent:
                         "platform": {
                             "type": "string",
                             "description": "Filter by platform: facebook, instagram, or all.",
-                            "default": "all",
                         },
                         "since": {
                             "type": "string",
